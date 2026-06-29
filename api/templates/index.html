@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Chatbot - Hỏi đáp Pháp luật Việt Nam</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 900px;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 85vh;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            text-align: center;
+        }
+
+        .chat-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .chat-header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message.user {
+            align-items: flex-end;
+        }
+
+        .message.assistant {
+            align-items: flex-start;
+        }
+
+        .message-bubble {
+            max-width: 80%;
+            padding: 15px 20px;
+            border-radius: 20px;
+            line-height: 1.5;
+        }
+
+        .message.user .message-bubble {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+
+        .message.assistant .message-bubble {
+            background: white;
+            color: #333;
+            border-bottom-left-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .message-sender {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        .chat-input-container {
+            padding: 20px 30px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 15px;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+
+        .send-button {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .send-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .send-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .stream-options {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .stream-options label {
+            font-size: 14px;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .pipeline-steps {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            font-size: 13px;
+        }
+
+        .pipeline-step {
+            padding: 8px 12px;
+            margin: 5px 0;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pipeline-step.processing {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .pipeline-step.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .step-icon {
+            font-size: 16px;
+        }
+
+        .citation {
+            color: #667eea;
+            text-decoration: underline;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .citation-tooltip {
+            position: relative;
+            display: inline-block;
+        }
+
+        .citation-tooltip:hover::after {
+            content: attr(data-info);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 1000;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .loading-dots {
+            display: inline-flex;
+            gap: 5px;
+        }
+
+        .loading-dots span {
+            width: 8px;
+            height: 8px;
+            background: currentColor;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .references-section {
+            margin-top: 15px;
+            padding: 15px;
+            background: #e8f4f8;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .references-section h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .reference-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #d0e8f0;
+            font-size: 13px;
+        }
+
+        .reference-item:last-child {
+            border-bottom: none;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🤖 RAG Chatbot</h1>
+            <p>Hỏi đáp Pháp luật Việt Nam</p>
+        </div>
+
+        <div class="stream-options">
+            <label>
+                <input type="checkbox" id="streamToggle" checked>
+                Streaming mode (hiển thị từng bước pipeline)
+            </label>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <div class="message assistant">
+                <div class="message-sender">Assistant</div>
+                <div class="message-bubble">
+                    Xin chào! Tôi là trợ lý ảo chuyên về pháp luật Việt Nam. 
+                    Bạn có câu hỏi gì về pháp luật mà tôi có thể giúp không?
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <input 
+                type="text" 
+                class="chat-input" 
+                id="questionInput" 
+                placeholder="Nhập câu hỏi của bạn..."
+                onkeypress="handleKeyPress(event)"
+            >
+            <button class="send-button" id="sendButton" onclick="sendMessage()">
+                Gửi
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chatMessages');
+        const questionInput = document.getElementById('questionInput');
+        const sendButton = document.getElementById('sendButton');
+        const streamToggle = document.getElementById('streamToggle');
+
+        let referencesInfo = {};
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function addMessage(sender, content, isHtml = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+            
+            const senderDiv = document.createElement('div');
+            senderDiv.className = 'message-sender';
+            senderDiv.textContent = sender === 'user' ? 'Bạn' : 'Assistant';
+            
+            const bubbleDiv = document.createElement('div');
+            bubbleDiv.className = 'message-bubble';
+            
+            if (isHtml) {
+                bubbleDiv.innerHTML = content;
+            } else {
+                bubbleDiv.textContent = content;
+            }
+            
+            messageDiv.appendChild(senderDiv);
+            messageDiv.appendChild(bubbleDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            return bubbleDiv;
+        }
+
+        function formatAnswerWithCitations(answer, referencesInfo) {
+            // Thay thế [N] bằng các citation có thể hover
+            return answer.replace(/\[(\d+)\]/g, (match, num) => {
+                const refId = parseInt(num);
+                const ref = referencesInfo[refId];
+                if (ref) {
+                    const info = `${ref.doc_name}${ref.article ? ' | ' + ref.article : ''}`;
+                    return `<span class="citation-tooltip citation" data-info="${info}">${match}</span>`;
+                }
+                return match;
+            });
+        }
+
+        function createPipelineStep(step, status, data) {
+            const stepDiv = document.createElement('div');
+            stepDiv.className = `pipeline-step ${status}`;
+            
+            let icon = '⏳';
+            if (status === 'completed') icon = '✅';
+            if (status === 'error') icon = '❌';
+            
+            let label = step;
+            let details = '';
+            
+            if (step === 'sub_queries' && data) {
+                label = `Phân tích câu hỏi (${data.count} sub-queries)`;
+                if (data.sub_queries) {
+                    details = data.sub_queries.map(q => `• ${q}`).join('<br>');
+                }
+            } else if (step === 'retrieval' && data) {
+                label = `Tìm kiếm tài liệu (${data.total_found} kết quả)`;
+            } else if (step === 'tool_call' && data) {
+                label = data.used_tool ? 'Sử dụng tool' : 'Không dùng tool';
+            } else if (step === 'answer') {
+                label = status === 'processing' ? 'Đang sinh câu trả lời...' : 'Câu trả lời';
+            }
+            
+            stepDiv.innerHTML = `
+                <span class="step-icon">${icon}</span>
+                <span>${label}</span>
+            `;
+            
+            return stepDiv;
+        }
+
+        async function sendMessage() {
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            // Disable input
+            questionInput.disabled = true;
+            sendButton.disabled = true;
+
+            // Add user message
+            addMessage('user', question);
+            questionInput.value = '';
+
+            // Create assistant message container
+            const assistantBubble = addMessage('assistant', '');
+            
+            const stream = streamToggle.checked;
+            referencesInfo = {};
+
+            try {
+                if (stream) {
+                    // Streaming mode với Server-Sent Events
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            question: question,
+                            stream: true
+                        })
+                    });
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    let buffer = '';
+                    let pipelineStepsDiv = null;
+                    let answerContent = '';
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    
+                                    if (data.step === 'sub_queries' || data.step === 'retrieval' || data.step === 'tool_call') {
+                                        if (!pipelineStepsDiv) {
+                                            pipelineStepsDiv = document.createElement('div');
+                                            pipelineStepsDiv.className = 'pipeline-steps';
+                                            assistantBubble.appendChild(pipelineStepsDiv);
+                                        }
+                                        
+                                        const stepEl = createPipelineStep(data.step, data.status, data.data);
+                                        pipelineStepsDiv.appendChild(stepEl);
+                                        
+                                    } else if (data.step === 'answer' && data.status === 'completed') {
+                                        answerContent = data.data.answer;
+                                        referencesInfo = {};
+                                        
+                                        // Build references info map
+                                        if (data.data.references_info) {
+                                            data.data.references_info.forEach(ref => {
+                                                referencesInfo[ref.ref_id] = ref;
+                                            });
+                                        }
+                                        
+                                        // Format and display answer with citations
+                                        const formattedAnswer = formatAnswerWithCitations(answerContent, referencesInfo);
+                                        
+                                        // Add references section if available
+                                        let referencesHtml = '';
+                                        if (data.data.references_info && data.data.references_info.length > 0) {
+                                            referencesHtml = '<div class="references-section"><h4>📚 Tài liệu tham khảo:</h4>';
+                                            data.data.references_info.forEach(ref => {
+                                                referencesHtml += `
+                                                    <div class="reference-item">
+                                                        <strong>[${ref.ref_id}]</strong> ${ref.doc_name}
+                                                        ${ref.article ? ' | ' + ref.article : ''}
+                                                    </div>
+                                                `;
+                                            });
+                                            referencesHtml += '</div>';
+                                        }
+                                        
+                                        assistantBubble.innerHTML = formattedAnswer + referencesHtml;
+                                        
+                                    } else if (data.event === 'error') {
+                                        assistantBubble.innerHTML = `<div class="error-message">Lỗi: ${data.data.error}</div>`;
+                                    }
+                                    
+                                } catch (e) {
+                                    console.error('Parse error:', e);
+                                }
+                            }
+                        }
+                        
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+
+                } else {
+                    // Non-streaming mode
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            question: question,
+                            stream: false
+                        })
+                    });
+
+                    const result = await response.json();
+                    
+                    if (result.data) {
+                        const data = result.data;
+                        answerContent = data.answer;
+                        referencesInfo = {};
+                        
+                        // Build references info map
+                        if (data.references_info) {
+                            data.references_info.forEach(ref => {
+                                referencesInfo[ref.ref_id] = ref;
+                            });
+                        }
+                        
+                        // Format and display answer with citations
+                        const formattedAnswer = formatAnswerWithCitations(answerContent, referencesInfo);
+                        
+                        // Add references section if available
+                        let referencesHtml = '';
+                        if (data.references_info && data.references_info.length > 0) {
+                            referencesHtml = '<div class="references-section"><h4>📚 Tài liệu tham khảo:</h4>';
+                            data.references_info.forEach(ref => {
+                                referencesHtml += `
+                                    <div class="reference-item">
+                                        <strong>[${ref.ref_id}]</strong> ${ref.doc_name}
+                                        ${ref.article ? ' | ' + ref.article : ''}
+                                    </div>
+                                `;
+                            });
+                            referencesHtml += '</div>';
+                        }
+                        
+                        assistantBubble.innerHTML = formattedAnswer + referencesHtml;
+                    }
+                }
+
+            } catch (error) {
+                assistantBubble.innerHTML = `<div class="error-message">Lỗi: ${error.message}</div>`;
+            } finally {
+                // Re-enable input
+                questionInput.disabled = false;
+                sendButton.disabled = false;
+                questionInput.focus();
+            }
+        }
+    </script>
+</body>
+</html>

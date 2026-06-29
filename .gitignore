@@ -1,6 +1,29 @@
-venv
-data
-.vscode
-.claude
+```
+# Dependencies
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Environment
 .env
-__pycache__
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+```
