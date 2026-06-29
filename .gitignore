@@ -3,3 +3,4 @@ data
 .vscode
 .claude
 .env
+__pycache__
