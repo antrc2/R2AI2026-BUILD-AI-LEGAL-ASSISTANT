@@ -13,6 +13,7 @@ class Document(BaseModel):
     text: str
     multi_modal: Optional[dict] = None
 
+
 class RerankerResult(BaseModel):
     index: int
     document: Document
@@ -33,8 +34,12 @@ class Reranker:
     def create(
         self,
         model: str,
-        input: list[str],
+        query: str,
+        documents: List[str],
     ) -> RerankerResponse:
+        """
+        Gọi API rerank với tham số query và documents riêng biệt.
+        """
         response = requests.post(
             f"{self._client.base_url}/rerank",
             headers={
@@ -42,17 +47,16 @@ class Reranker:
             },
             json={
                 "model": model,
-                "input": input,
+                "query": query,
+                "documents": documents,
             },
         )
 
         response.raise_for_status()
-
         return RerankerResponse.model_validate(response.json())
 
 
 class OpenAIExtended(OpenAI):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.reranker = Reranker(self)

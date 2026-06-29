@@ -2,265 +2,244 @@ import faiss
 import os
 import numpy as np
 import json
-from typing import List
 import re
+from typing import List, Optional, Dict, Any
+from services.Chat import ChatService # Để lấy embedding
 
 DATA_DIR           = "data"
 FAISS_INDEX_FILE   = os.path.join(DATA_DIR, "faiss.index")
 FAISS_ID_MAP_FILE  = os.path.join(DATA_DIR, "faiss_id_map.json")
 CHUNK_MAP_FILE     = os.path.join(DATA_DIR, "chunk_map.json")
-ARTICLE_MAP_FILE = os.path.join(DATA_DIR,"article_index_map.json")
-CHUNKS = os.path.join(DATA_DIR, "chunks.json")
+ARTICLE_MAP_FILE   = os.path.join(DATA_DIR, "article_index_map.json")
+CHUNKS_FILE        = os.path.join(DATA_DIR, "chunks.json")
 
-class Search:
-    def __init__(self, threshold=0.5):
+class SearchService:
+    def __init__(self, threshold=0.45):
         self.threshold = threshold
-        self.index = self.__load_index()
-        self.faiss_id_map = self.__load_faiss_id_map()
-        self.chunk_map = self.__load_chunk_map()
-        self.article_index_map = self.__load_article_index_map()
-        self.chunks_text_map = self.__load_chunks_text_map()
+        self.chat_service = ChatService() # Dùng để embed query
         
-    
-    def __load_index(self,):
+        # Load dữ liệu tĩnh
         if not os.path.exists(FAISS_INDEX_FILE):
             raise FileNotFoundError(f"Không tìm thấy file index: {FAISS_INDEX_FILE}")
-        idx = faiss.read_index(FAISS_INDEX_FILE)
-        print(f"[FAISS] Loaded: {idx.ntotal:,} vectors")
-        return idx
-
-    def __load_faiss_id_map(self,):
-        if not os.path.exists(FAISS_ID_MAP_FILE):
-            raise FileNotFoundError(f"Không tìm thấy file map: {FAISS_ID_MAP_FILE}")
+        self.index = faiss.read_index(FAISS_INDEX_FILE)
+        
         with open(FAISS_ID_MAP_FILE, "r") as f:
-            raw = json.load(f)
-        return {int(k): v for k, v in raw.items()}
-
-    def __load_chunk_map(self,)-> List[dict]:
-        if not os.path.exists(CHUNK_MAP_FILE):
-            raise FileNotFoundError(f"Không tìm thấy file map: {CHUNK_MAP_FILE}")
-        with open(CHUNK_MAP_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    def __load_article_index_map(self,):
-        if not os.path.exists(ARTICLE_MAP_FILE):
-            raise FileNotFoundError(f"Không tìm thấy file map: {ARTICLE_MAP_FILE}")
-        with open(ARTICLE_MAP_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    def __load_chunks_text_map(self,):
-        chunks_text_map = {}
-        with open(CHUNKS,'r',encoding='utf-8') as f:
-            all_chunks = json.load(f)
-        for c in all_chunks:
-            chunks_text_map[c["chunk_id"]] = c.get("embed_text", "")
-        return chunks_text_map
-    
-    def __build_embed_text(self,candidate: dict) -> str:
-        """Xây text đại diện từ metadata để rerank."""
-        meta = candidate.get("metadata", {})
-        parts = []
-        if meta.get("title"):
-            parts.append(meta["title"])
-        # Điều
-        art = meta.get("article", "")
-        if art:
-            parts.append(art)
-        # hierarchy thêm
-        for lvl in ("chapter", "section", "subsection"):
-            v = meta.get(lvl, "")
-            if v:
-                parts.append(v)
-        # leaf_title
-        lt = meta.get("leaf_title", "")
-        if lt and lt not in parts:
-            parts.append(lt)
-        return " - ".join(parts)
-    def semantic_search(
-        self,
-        vec: np.ndarray,
-        top_k: int = 20,
-    ) -> list[dict]:
-        """Tìm kiếm semantic toàn cục."""
-
+            self.faiss_id_map = {int(k): v for k, v in json.load(f).items()}
             
-        scores, ids = self.index.search(vec, top_k)
+        with open(CHUNK_MAP_FILE, "r", encoding="utf-8") as f:
+            self.chunk_map = json.load(f)
+            
+        with open(ARTICLE_MAP_FILE, "r", encoding="utf-8") as f:
+            self.article_index_map = json.load(f)
+            
+        # Load chunks text (nếu cần thiết cho việc hiển thị nhanh, otherwise lấy từ chunk_map)
+        self.chunks_text_map = {}
+        if os.path.exists(CHUNKS_FILE):
+            with open(CHUNKS_FILE, 'r', encoding='utf-8') as f:
+                all_chunks = json.load(f)
+            for c in all_chunks:
+                self.chunks_text_map[c["chunk_id"]] = c.get("embed_text", "")
 
-        results = []
+    def _get_chunk_content(self, chunk_id: str) -> str:
+        """Lấy nội dung full của chunk."""
+        # Ưu tiên lấy từ chunks_text_map, nếu không có thì reconstruct từ metadata hoặc trả về rỗng
+        if chunk_id in self.chunks_text_map:
+            return self.chunks_text_map[chunk_id]
+        
+        meta = self.chunk_map.get(chunk_id, {})
+        # Fallback: ghép metadata nếu không có text sẵn (tùy cấu trúc data của bạn)
+        parts = []
+        if meta.get("title"): parts.append(meta["title"])
+        if meta.get("article"): parts.append(meta["article"])
+        if meta.get("content"): parts.append(meta["content"])
+        return " | ".join(parts)
+
+    def semantic_search(self, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
+        """
+        Tìm kiếm ngữ nghĩa toàn cục:
+        1. Embed query.
+        2. FAISS search.
+        3. Rerank kết quả.
+        """
+        # 1. Embedding
+        vec = self.chat_service.get_embedding(query)
+        if not vec:
+            return []
+        
+        vec_np = np.array([vec], dtype=np.float32)
+        
+        # 2. FAISS Search
+        scores, ids = self.index.search(vec_np, min(top_k * 2, self.index.ntotal)) # Lấy nhiều hơn để rerank
+        
+        candidates = []
+        docs_text_for_rerank = []
+        
         for score, faiss_idx in zip(scores[0], ids[0]):
-            if self.threshold > float(score):
-                continue
-            if faiss_idx < 0:
-                continue
+            if faiss_idx < 0: continue
             chunk_id = self.faiss_id_map.get(int(faiss_idx))
-            if chunk_id is None:
-                continue
+            if chunk_id is None: continue
+            
             meta = self.chunk_map.get(chunk_id, {})
-            results.append({
+            content = self._get_chunk_content(chunk_id)
+            
+            # Filter threshold sơ bộ
+            if float(score) < self.threshold:
+                continue
+                
+            candidates.append({
                 "chunk_id": chunk_id,
-                "score":    float(score),
+                "faiss_score": float(score),
                 "metadata": meta,
+                "content": content
             })
-        return results
-    
+            docs_text_for_rerank.append(content)
+        
+        if not candidates:
+            return []
+            
+        # 3. Rerank
+        rerank_scores = self.chat_service.get_rerank_scores(query, docs_text_for_rerank)
+        
+        # Gán lại score và sort
+        for i, candidate in enumerate(candidates):
+            candidate["rerank_score"] = rerank_scores[i]
+            candidate["final_score"] = rerank_scores[i] # Ưu tiên rerank score
+        
+        # Sort theo rerank_score giảm dần
+        candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        
+        # Cắt top_k cuối cùng
+        final_results = []
+        for item in candidates[:top_k]:
+            final_results.append({
+                "chunk_id": item["chunk_id"],
+                "score": item["final_score"],
+                "metadata": item["metadata"],
+                "content": item["content"] # Nội dung đầy đủ để đưa vào context
+            })
+            
+        return final_results
+
     def doc_ref_search(
         self,
-        vec_query: np.ndarray,
-        doc_ref: str | None = None,
-        article_filter: str | None = None,
-        clause_filter: str | None = None,
-        top_k: int = 10,
-    ) -> list[dict]:
+        query: str,
+        doc_ref: str,
+        article_filter: Optional[str] = None,
+        clause_filter: Optional[str] = None,
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Tìm kiếm trong văn bản cụ thể (dùng cho tool).
+        Hỗ trợ lọc theo Số hiệu, Điều, Khoản trước khi Semantic Rank.
+        """
+        extracted_doc_num = self._extract_doc_num(doc_ref)
+        ref_norm = self._normalize_doc_ref(extracted_doc_num or doc_ref)
         
-        extracted_doc_num = self.__extract_doc_num(doc_ref)
-        ref_norm = self.__normalize_doc_ref(extracted_doc_num or doc_ref)
-
-        # ─────────────────────────────────────────────────────────
-        # 1. Lọc chunk_map theo doc_num (dạng "54/2014/QH13") hoặc title (dạng
-        #    "Luật sở hữu trí tuệ"). Ưu tiên so khớp chính xác doc_num đã trích.
-        # ─────────────────────────────────────────────────────────
-        matched_ids: list[str] = []  # các chunk_id (UUID)
-        doc_id: str | None = None
-
+        # 1. Lọc chunk_map theo doc_ref
+        matched_ids: List[str] = []
+        
+        # Ưu tiên match chính xác doc_num
         if extracted_doc_num:
-            extracted_norm =self.__normalize_doc_ref(extracted_doc_num)
+            extracted_norm = self._normalize_doc_ref(extracted_doc_num)
             for chunk_id, meta in self.chunk_map.items():
-                doc_num_norm =self.__normalize_doc_ref(meta.get("doc_num", ""))
+                doc_num_norm = self._normalize_doc_ref(meta.get("doc_num", ""))
                 if doc_num_norm == extracted_norm:
                     matched_ids.append(chunk_id)
-
+        
+        # Fallback match mờ nếu không tìm thấy
         if not matched_ids:
-            # Fallback: so khớp mờ 2 chiều, dùng cho trường hợp doc_ref là title
-            # (ví dụ "Luật sở hữu trí tuệ") hoặc doc_num không trích được.
             for chunk_id, meta in self.chunk_map.items():
-                doc_num_norm =self.__normalize_doc_ref(meta.get("doc_num", ""))
-                title_norm =self.__normalize_doc_ref(meta.get("title", ""))
-
-                if (
-                    ref_norm in doc_num_norm
-                    or ref_norm in title_norm
-                    or doc_num_norm in ref_norm
-                    or title_norm in ref_norm
-                ):
+                doc_num_norm = self._normalize_doc_ref(meta.get("doc_num", ""))
+                title_norm = self._normalize_doc_ref(meta.get("title", ""))
+                if (ref_norm in doc_num_norm or ref_norm in title_norm or 
+                    doc_num_norm in ref_norm or title_norm in ref_norm):
                     matched_ids.append(chunk_id)
-
+                    
         if not matched_ids:
             return []
-
-        # Suy ra doc_id chung của văn bản (để tra article_index_map)
-        doc_id = self.chunk_map[matched_ids[0]].get("doc_id")
-
-        # ─────────────────────────────────────────────────────────
-        # 2. Lọc theo điều / khoản nếu có
-        # ─────────────────────────────────────────────────────────
+            
+        # 2. Lọc theo Điều/Khoản nếu có
         if article_filter:
-            dieu_norm =self.__normalize_doc_ref(article_filter)
+            dieu_norm = self._normalize_doc_ref(article_filter)
+            # Thử match key trong article_index_map trước
+            doc_id = self.chunk_map[matched_ids[0]].get("doc_id")
             article_key = f"{doc_id}|{article_filter.strip()}"
-
-            # Ưu tiên dùng article_index_map để khoanh vùng nhanh (so khớp đúng
-            # định dạng key "<doc_id>|<article>" như khi build index).
+            
             faiss_ids_for_article = self.article_index_map.get(article_key)
-
-            if faiss_ids_for_article is not None:
+            if faiss_ids_for_article:
                 ids_from_article = {
-                    self.faiss_id_map[fid]
-                    for fid in faiss_ids_for_article
+                    self.faiss_id_map[fid] for fid in faiss_ids_for_article 
                     if fid in self.faiss_id_map
                 }
-                filtered_by_dieu = [cid for cid in matched_ids if cid in ids_from_article]
+                matched_ids = [cid for cid in matched_ids if cid in ids_from_article]
             else:
-                # Fallback: tra trực tiếp metadata thật trong chunk_map, để chịu
-                # được khác biệt nhỏ về định dạng giữa article_filter và key đã lưu.
-                filtered_by_dieu = [
-                    cid
-                    for cid in matched_ids
-                    if dieu_norm in self.__normalize_doc_ref(self.chunk_map[cid].get("article", ""))
+                # Fallback scan metadata
+                matched_ids = [
+                    cid for cid in matched_ids 
+                    if dieu_norm in self._normalize_doc_ref(self.chunk_map[cid].get("article", ""))
                 ]
-
-            if filtered_by_dieu:
-                matched_ids = filtered_by_dieu
-
+        
         if clause_filter:
-            khoan_norm =self.__normalize_doc_ref(clause_filter)
-            filtered_by_khoan = [
-                cid
-                for cid in matched_ids
-                if khoan_norm in self.__normalize_doc_ref(self.chunk_map[cid].get("clause", ""))
+            khoan_norm = self._normalize_doc_ref(clause_filter)
+            matched_ids = [
+                cid for cid in matched_ids 
+                if khoan_norm in self._normalize_doc_ref(self.chunk_map[cid].get("clause", ""))
             ]
-            if filtered_by_khoan:
-                matched_ids = filtered_by_khoan
-
+            
         if not matched_ids:
             return []
-
-        # ─────────────────────────────────────────────────────────
-        # 3. Semantic Ranking trong phạm vi đã khoanh vùng (matched_ids)
-        #    - Không có dieu/clause_filter: phạm vi là toàn văn bản.
-        #    - Có article_filter và/hoặc clause_filter: phạm vi đã hẹp lại tương ứng.
-        # ─────────────────────────────────────────────────────────
-        if vec_query and len(matched_ids) > 1:
-            chunk_to_faiss = {v: k for k, v in self.faiss_id_map.items()}
-            matched_faiss_ids = [
-                chunk_to_faiss[cid] for cid in matched_ids if cid in chunk_to_faiss
-            ]
-
-            if matched_faiss_ids:
-                if vec_query.size > 0:
-                    k_search = len(self.faiss_id_map)
-                    scores, ids = self.index.search(vec_query, k_search)
-
+            
+        # 3. Semantic Ranking trong tập đã lọc
+        # Nếu chỉ còn 1 ít kết quả sau lọc, có thể trả về luôn hoặc vẫn embed để sort
+        if len(matched_ids) > 1:
+            vec = self.chat_service.get_embedding(query)
+            if vec:
+                vec_np = np.array([vec], dtype=np.float32)
+                chunk_to_faiss = {v: k for k, v in self.faiss_id_map.items()}
+                matched_faiss_ids = [chunk_to_faiss[cid] for cid in matched_ids if cid in chunk_to_faiss]
+                
+                if matched_faiss_ids:
+                    # Search trên toàn index nhưng chỉ quan tâm các id trong matched_faiss_ids
+                    # Hoặc tạo temp index (phức tạp), ở đây ta search rộng rồi filter
+                    k_search = min(len(matched_faiss_ids) + 5, self.index.ntotal)
+                    scores, ids = self.index.search(vec_np, k_search)
+                    
                     scored_matches = []
                     faiss_id_set = set(matched_faiss_ids)
-
+                    
                     for score, fid in zip(scores[0], ids[0]):
-                        if float(score) > self.threshold:
-                            continue
-                        if fid in faiss_id_set:
+                        if fid in faiss_id_set and float(score) >= self.threshold:
                             cid = self.faiss_id_map[int(fid)]
                             scored_matches.append((float(score), cid))
-
+                    
                     scored_matches.sort(reverse=True)
                     matched_ids = [cid for _, cid in scored_matches[:top_k]]
-
-        # ─────────────────────────────────────────────────────────
-        # 4. Build results
-        # ─────────────────────────────────────────────────────────
+        
+        # 4. Build result
         results = []
         for cid in matched_ids[:top_k]:
             meta = self.chunk_map.get(cid, {})
-            results.append(
-                {
-                    "chunk_id": cid,
-                    "score": 1.0,
-                    "metadata": meta,
-                    "source": "doc_ref_search",
-                }
-            )
-        print(
-            f"Tìm thấy {len(results)} ở {extracted_doc_num or doc_ref}"
-            f"{' - ' + article_filter if article_filter else ''}"
-            f"{' - ' + clause_filter if clause_filter else ''}"
-        )
+            content = self._get_chunk_content(cid)
+            results.append({
+                "chunk_id": cid,
+                "score": 1.0, # Default score cao vì đã filter thủ công
+                "metadata": meta,
+                "content": content,
+                "source": "doc_ref_search"
+            })
+            
         return results
-    
-    def __normalize_doc_ref(self,text: str) -> str:
-        """Chuẩn hoá chuỗi số hiệu / tên văn bản để so sánh mờ."""
+
+    def _normalize_doc_ref(self, text: str) -> str:
+        if not text: return ""
         return re.sub(r'\s+', ' ', text.strip().lower())
 
-    def __extract_doc_num(self,text: str) -> str | None:
-        """
-        Trích số hiệu văn bản thuần từ chuỗi bất kỳ.
-        Ví dụ: 'Nghị định 58/2020/NĐ-CP' -> '58/2020/NĐ-CP'
-            '36/2015/QĐ-TTg'          -> '36/2015/QĐ-TTg'
-        Pattern chung: <số>/<năm>/<mã loại văn bản viết hoa, có thể có dấu gạch ngang>
-        """
-        if not text:
-            return None
+    def _extract_doc_num(self, text: str) -> Optional[str]:
+        if not text: return None
         match = re.search(
             r'\d+[A-Za-z]*\s*/\s*\d{4}\s*/\s*[A-ZĐƯƠ]+(?:-[A-ZĐƯƠ]+)*',
-            text,
-            flags=re.UNICODE,
+            text, flags=re.UNICODE
         )
-        if not match:
-            return None
-        # Chuẩn hoá lại: bỏ khoảng trắng dư quanh dấu '/'
+        if not match: return None
         raw = match.group(0)
         return re.sub(r'\s*/\s*', '/', raw).strip()
