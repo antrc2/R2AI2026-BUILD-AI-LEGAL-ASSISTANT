@@ -18,14 +18,17 @@ class ChatRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+    )
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     if req.stream:
         async def event_generator():
             try:
                 for event in pipeline.process(question=req.question, stream=True):
+                    print(f"Event: {event}")
                     # Format SSE: data: {...}\n\n
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"

@@ -41,7 +41,7 @@ class Reranker:
         Gọi API rerank với tham số query và documents riêng biệt.
         """
         response = requests.post(
-            f"{self._client.base_url}/rerank",
+            f"{self._client.base_url}rerank",
             headers={
                 "Authorization": f"Bearer {self._client.api_key}"
             },

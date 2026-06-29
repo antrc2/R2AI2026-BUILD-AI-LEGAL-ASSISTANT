@@ -1,28 +1,133 @@
 <!DOCTYPE html>
 <html lang="vi">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Legal RAG Chatbot</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f4f9; margin: 0; display: flex; justify-content: center; height: 100vh; }
-        .container { width: 100%; max-width: 900px; background: white; display: flex; flex-direction: column; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .header { padding: 20px; background: #2c3e50; color: white; text-align: center; }
-        .chat-box { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
-        .input-area { padding: 20px; border-top: 1px solid #ddd; display: flex; gap: 10px; align-items: center; }
-        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 5px; outline: none; }
-        button { padding: 12px 20px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        button:hover { background: #2980b9; }
-        button:disabled { background: #bdc3c7; cursor: not-allowed; }
-        
-        .message { max-width: 80%; padding: 15px; border-radius: 10px; line-height: 1.5; position: relative; }
-        .user-msg { align-self: flex-end; background: #3498db; color: white; }
-        .bot-msg { align-self: flex-start; background: #ecf0f1; color: #333; }
-        
-        .citation { color: #2980b9; font-weight: bold; cursor: pointer; text-decoration: underline; }
-        .citation:hover { background: #d6eaf8; }
-        
-        /* Tooltip cho citation */
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #f4f4f9;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: white;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .header {
+            padding: 20px;
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+        }
+
+        .chat-box {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            outline: none;
+        }
+
+        button {
+            padding: 12px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 15px;
+            border-radius: 10px;
+            line-height: 1.5;
+            position: relative;
+        }
+
+        .user-msg {
+            align-self: flex-end;
+            background: #3498db;
+            color: white;
+        }
+
+        .bot-msg {
+            align-self: flex-start;
+            background: #ecf0f1;
+            color: #333;
+        }
+
+        /* --- CSS cho Steps Log --- */
+        .steps-log-container {
+            font-size: 0.85em;
+            color: #7f8c8d;
+            margin-bottom: 15px;
+            border-left: 3px solid #bdc3c7;
+            padding-left: 10px;
+        }
+
+        .step-log {
+            margin-bottom: 5px;
+            transition: all 0.3s ease;
+        }
+
+        .step-log.processing {
+            color: #2980b9;
+            font-style: italic;
+        }
+
+        .step-log.done {
+            color: #27ae60;
+            font-style: normal;
+        }
+
+        /* --- CSS cho Citation & Tooltip --- */
+        .citation {
+            color: #2980b9;
+            font-weight: bold;
+            cursor: pointer;
+            text-decoration: underline;
+            position: relative;
+            display: inline-block;
+        }
+
         .tooltip {
             visibility: hidden;
             width: 250px;
@@ -32,7 +137,7 @@
             border-radius: 6px;
             padding: 10px;
             position: absolute;
-            z-index: 1;
+            z-index: 10;
             bottom: 125%;
             left: 50%;
             margin-left: -125px;
@@ -41,170 +146,310 @@
             font-size: 0.85em;
             pointer-events: none;
         }
-        .citation:hover .tooltip { visibility: visible; opacity: 1; }
+
+        .citation:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .references {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+            font-size: 0.85em;
+        }
         
-        .steps-log { font-size: 0.8em; color: #7f8c8d; margin-bottom: 10px; font-style: italic; }
-        .references { margin-top: 15px; padding-top: 10px; border-top: 1px solid #ccc; font-size: 0.85em; }
-        .ref-item { margin-bottom: 5px; color: #555; }
-        
-        .toggle-container { display: flex; align-items: center; gap: 5px; font-size: 0.9em; color: #555; }
+        .references ul {
+            padding-left: 20px;
+            margin: 5px 0;
+        }
+
+        .references li {
+            margin-bottom: 4px;
+            color: #555;
+        }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.9em;
+            color: #555;
+        }
+
+        /* Markdown styling */
+        .bot-msg h1, .bot-msg h2, .bot-msg h3 { margin-top: 16px; margin-bottom: 10px; }
+        .bot-msg p { margin: 8px 0; }
+        .bot-msg ul, .bot-msg ol { padding-left: 22px; margin: 10px 0; }
+        .bot-msg li { margin: 4px 0; }
+        .bot-msg pre { background: #1e1e1e; color: #fff; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+        .bot-msg code:not(pre code) { background: #ececec; padding: 2px 5px; border-radius: 4px; font-size: 0.95em; }
+        .bot-msg table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+        .bot-msg th, .bot-msg td { border: 1px solid #ddd; padding: 8px; }
+        .bot-msg th { background: #f5f5f5; }
+        .bot-msg blockquote { border-left: 4px solid #3498db; margin: 10px 0; padding-left: 12px; color: #555; }
     </style>
 </head>
+
 <body>
-<div class="container">
-    <div class="header"><h2>Trợ Lý Pháp Lý AI</h2></div>
-    <div class="chat-box" id="chatBox"></div>
-    <div class="input-area">
-        <div class="toggle-container">
-            <label for="streamToggle">Stream:</label>
-            <input type="checkbox" id="streamToggle" checked>
+    <div class="container">
+        <div class="header">
+            <h2>Trợ Lý Pháp Lý AI</h2>
         </div>
-        <input type="text" id="userInput" placeholder="Nhập câu hỏi pháp lý..." onkeypress="if(event.key==='Enter') sendMessage()">
-        <button onclick="sendMessage()" id="sendBtn">Gửi</button>
+        <div class="chat-box" id="chatBox"></div>
+        <div class="input-area">
+            <div class="toggle-container">
+                <label for="streamToggle">Stream:</label>
+                <input type="checkbox" id="streamToggle" checked>
+            </div>
+            <input type="text" id="userInput" placeholder="Nhập câu hỏi pháp lý..."
+                onkeypress="if(event.key==='Enter') sendMessage()">
+            <button onclick="sendMessage()" id="sendBtn">Gửi</button>
+        </div>
     </div>
-</div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 
-<script>
-    const chatBox = document.getElementById('chatBox');
-    const userInput = document.getElementById('userInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const streamToggle = document.getElementById('streamToggle');
+    <script>
+        marked.setOptions({ breaks: true, gfm: true });
 
-    let citationsData = {}; // Lưu trữ data citation để hover
+        const chatBox = document.getElementById('chatBox');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const streamToggle = document.getElementById('streamToggle');
 
-    function appendMessage(role, text, isHtml = false) {
-        const div = document.createElement('div');
-        div.className = `message ${role === 'user' ? 'user-msg' : 'bot-msg'}`;
-        if (isHtml) div.innerHTML = text;
-        else div.textContent = text;
-        chatBox.appendChild(div);
-        chatBox.scrollTop = chatBox.scrollHeight;
-        return div;
-    }
+        function renderMarkdown(text, sources) {
+            const withCitation = parseCitations(text, sources);
+            return marked.parse(withCitation);
+        }
 
-    function parseCitations(text, sources) {
-        // Thay thế [N] bằng span có tooltip
-        return text.replace(/\[(\d+)\]/g, (match, number) => {
-            const source = sources[number];
-            if (!source) return match;
+        function parseCitations(text, sources) {
+            return text.replace(/\[(\d+)\]/g, (match, number) => {
+                const source = sources[number];
+                if (!source) return match;
+
+                const snippet = source.content ? source.content.substring(0, 150) + '...' : 'Không có nội dung';
+                const meta = source.metadata || {};
+                const title = meta.title || meta.doc_num || 'Văn bản không tên';
+
+                return `<span class="citation">${match}<span class="tooltip"><strong>${title}</strong><br>${snippet}</span></span>`;
+            });
+        }
+
+        function appendMessage(role, text, isHtml = false) {
+            const div = document.createElement('div');
+            div.className = `message ${role === 'user' ? 'user-msg' : 'bot-msg'}`;
+            if (isHtml) div.innerHTML = text;
+            else div.textContent = text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            return div;
+        }
+
+        async function sendMessage() {
+            const question = userInput.value.trim();
+            if (!question) return;
+
+            appendMessage('user', question);
+            userInput.value = '';
+            sendBtn.disabled = true;
+
+            const useStream = streamToggle.checked;
             
-            const snippet = source.content ? source.content.substring(0, 150) + '...' : 'Không có nội dung';
-            const meta = source.metadata || {};
-            const title = meta.title || meta.doc_num || 'Văn bản không tên';
+            // Tạo cấu trúc DOM cho Bot Message
+            const botMsgDiv = document.createElement('div');
+            botMsgDiv.className = 'message bot-msg';
             
-            return `<span class="citation">${match}<span class="tooltip"><strong>${title}</strong><br>${snippet}</span></span>`;
-        });
-    }
+            const stepsContainer = document.createElement('div');
+            stepsContainer.className = 'steps-log-container';
+            botMsgDiv.appendChild(stepsContainer);
+            
+            const answerContainer = document.createElement('div');
+            answerContainer.className = 'answer-container';
+            botMsgDiv.appendChild(answerContainer);
+            
+            const refsContainer = document.createElement('div');
+            refsContainer.className = 'references';
+            botMsgDiv.appendChild(refsContainer);
+            
+            chatBox.appendChild(botMsgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
 
-    async function sendMessage() {
-        const question = userInput.value.trim();
-        if (!question) return;
+            let fullText = "";
+            let stepsHtml = "";
+            let citationsData = {};
 
-        appendMessage('user', question);
-        userInput.value = '';
-        sendBtn.disabled = true;
+            // Hàm xử lý cập nhật Step Log
+            function handleStep(data) {
+                const step = data.step;
+                const status = data.status;
+                const d = data.data || {};
 
-        const useStream = streamToggle.checked;
-        const botMsgDiv = appendMessage('bot', '<i>Đang xử lý...</i>', true);
-        let fullText = "";
-        let stepsLog = "";
-        citationsData = {};
-
-        try {
-            if (useStream) {
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({question, stream: true})
-                });
-                
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-
-                while (true) {
-                    const {done, value} = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                
-                                // Xử lý các bước pipeline
-                                if (data.step === 'sub_queries' && data.status === 'done') {
-                                    stepsLog += `🔍 Phân tích: ${data.data.queries.join(', ')}<br>`;
-                                } else if (data.step === 'retrieval' && data.status === 'done') {
-                                    stepsLog += `📚 Tìm thấy: ${data.data.count} kết quả<br>`;
-                                } else if (data.step === 'tool_call' && data.status === 'detected') {
-                                    stepsLog += `🛠️ Gọi tool: ${data.data.tool}<br>`;
-                                } else if (data.step === 'answer') {
-                                    if (data.status === 'streaming') {
-                                        fullText += data.data.chunk;
-                                        if (data.data.citations) citationsData = data.data.citations;
-                                        
-                                        // Render tạm thời
-                                        const renderedHtml = parseCitations(fullText, citationsData);
-                                        botMsgDiv.innerHTML = `<div class="steps-log">${stepsLog}</div>` + renderedHtml;
-                                        chatBox.scrollTop = chatBox.scrollHeight;
-                                    } else if (data.status === 'done') {
-                                        // Cập nhật lần cuối đầy đủ
-                                        fullText = data.data.text;
-                                        citationsData = data.data.citations;
-                                        const renderedHtml = parseCitations(fullText, citationsData);
-                                        
-                                        let refsHtml = '<div class="references"><strong>Tài liệu tham khảo:</strong>';
-                                        Object.values(citationsData).forEach((src, idx) => {
-                                            const m = src.metadata || {};
-                                            refsHtml += `<div class="ref-item">[${idx+1}] ${m.title || m.doc_num || 'Unknown'} - ${m.article || ''}</div>`;
-                                        });
-                                        refsHtml += '</div>';
-                                        
-                                        botMsgDiv.innerHTML = `<div class="steps-log">${stepsLog}</div>` + renderedHtml + refsHtml;
-                                    }
-                                }
-                            } catch (e) { console.error(e); }
-                        }
+                if (step === 'sub_queries') {
+                    if (status === 'processing') {
+                        stepsHtml += `<div class="step-log processing">🔍 Đang phân tích câu hỏi...</div>`;
+                    } else if (status === 'done') {
+                        stepsHtml += `<div class="step-log done">🔍 Đã phân tích thành ${d.queries.length} ý: <i>${d.queries.join(', ')}</i></div>`;
+                    }
+                } else if (step === 'retrieval') {
+                    if (status === 'processing') {
+                        stepsHtml += `<div class="step-log processing">📚 Đang tìm kiếm tài liệu...</div>`;
+                    } else if (status === 'done') {
+                        stepsHtml += `<div class="step-log done">📚 Tìm thấy ${d.count} đoạn trích liên quan.</div>`;
+                    }
+                } else if (step === 'tool_call') {
+                    if (status === 'processing') {
+                        stepsHtml += `<div class="step-log processing">🛠️ Đang kiểm tra ngữ cảnh...</div>`;
+                    } else if (status === 'detected') {
+                        stepsHtml += `<div class="step-log done">🛠️ Đang tra cứu văn bản: <b>${d.args.doc_ref}</b> (Nội dung: <i>${d.args.content_query}</i>)...</div>`;
+                    } else if (status === 'executed') {
+                        stepsHtml += `<div class="step-log done">🛠️ Tìm thấy thêm ${d.found_count} đoạn trích từ văn bản được trích dẫn.</div>`;
+                    } else if (status === 'skipped') {
+                        stepsHtml += `<div class="step-log done">✅ Đủ thông tin, không cần tra cứu thêm.</div>`;
+                    }
+                } else if (step === 'answer') {
+                    if (status === 'start') {
+                        stepsHtml += `<div class="step-log done">✍️ Đang tổng hợp câu trả lời...</div>`;
                     }
                 }
-            } else {
-                // Non-stream
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({question, stream: false})
-                });
-                const data = await response.json();
                 
-                if (data.final_answer) {
-                    citationsData = {};
-                    // Tìm citation từ steps
-                    const answerStep = data.steps.find(s => s.step === 'answer' && s.status === 'done');
-                    if (answerStep && answerStep.data.citations) {
-                        citationsData = answerStep.data.citations;
-                    }
+                stepsContainer.innerHTML = stepsHtml;
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
+
+            // Hàm xử lý dữ liệu stream trả về
+            function processStreamData(data) {
+                // 1. Cập nhật Step Log (nếu không phải là answer streaming)
+                if (data.step !== 'answer' || data.status !== 'streaming') {
+                    handleStep(data);
+                }
+
+                // 2. Xử lý Answer Streaming
+                if (data.step === 'answer' && data.status === 'streaming') {
+                    fullText += data.data.chunk;
+                    if (data.data.citations) citationsData = data.data.citations;
                     
-                    const renderedHtml = parseCitations(data.final_answer, citationsData);
+                    const renderedHtml = renderMarkdown(fullText, citationsData);
+                    answerContainer.innerHTML = renderedHtml;
                     
-                    let refsHtml = '<div class="references"><strong>Tài liệu tham khảo:</strong>';
-                    Object.values(citationsData).forEach((src, idx) => {
-                        const m = src.metadata || {};
-                        refsHtml += `<div class="ref-item">[${idx+1}] ${m.title || m.doc_num || 'Unknown'}</div>`;
+                    answerContainer.querySelectorAll("pre code").forEach((el) => {
+                        hljs.highlightElement(el);
                     });
-                    refsHtml += '</div>';
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+                
+                // 3. Xử lý Answer Done (Hoàn tất)
+                if (data.step === 'answer' && data.status === 'done') {
+                    fullText = data.data.text;
+                    citationsData = data.data.citations;
+                    const renderedHtml = renderMarkdown(fullText, citationsData);
+                    answerContainer.innerHTML = renderedHtml;
                     
-                    botMsgDiv.innerHTML = renderedHtml + refsHtml;
+                    let refsHtml = '<strong>Tài liệu tham khảo:</strong><ul>';
+                    Object.keys(citationsData).forEach((key) => {
+                        const src = citationsData[key];
+                        const m = src.metadata || {};
+                        const title = m.title || m.doc_num || 'Văn bản không tên';
+                        const article = m.article || m.khoan || '';
+                        refsHtml += `<li>[${key}] ${title} ${article ? '- ' + article : ''}</li>`;
+                    });
+                    refsHtml += '</ul>';
+                    refsContainer.innerHTML = refsHtml;
+                    
+                    answerContainer.querySelectorAll("pre code").forEach((el) => {
+                        hljs.highlightElement(el);
+                    });
                 }
             }
-        } catch (err) {
-            botMsgDiv.innerHTML += `<br><span style="color:red">Lỗi: ${err.message}</span>`;
-        } finally {
-            sendBtn.disabled = false;
-            userInput.focus();
+
+            try {
+                if (useStream) {
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ question, stream: true })
+                    });
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = ""; // Buffer để xử lý chunk bị cắt đôi
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || ""; // Giữ lại dòng chưa hoàn chỉnh vào buffer
+
+                        for (const line of lines) {
+                            const trimmedLine = line.trim();
+                            if (trimmedLine.startsWith('data: ') && trimmedLine !== 'data: [DONE]') {
+                                try {
+                                    const data = JSON.parse(trimmedLine.slice(6));
+                                    processStreamData(data);
+                                } catch (e) { 
+                                    console.error("JSON parse error:", e, "Line:", trimmedLine); 
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Xử lý phần buffer còn sót lại ở cuối
+                    if (buffer.trim().startsWith('data: ') && buffer.trim() !== 'data: [DONE]') {
+                        try {
+                            const data = JSON.parse(buffer.trim().slice(6));
+                            processStreamData(data);
+                        } catch (e) {}
+                    }
+
+                } else {
+                    // Non-stream
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ question, stream: false })
+                    });
+                    const data = await response.json();
+
+                    if (data.steps) {
+                        for (const stepData of data.steps) {
+                            handleStep(stepData);
+                        }
+                    }
+
+                    if (data.final_answer) {
+                        fullText = data.final_answer;
+                        citationsData = data.citations || {};
+                        
+                        const renderedHtml = renderMarkdown(fullText, citationsData);
+                        answerContainer.innerHTML = renderedHtml;
+                        
+                        let refsHtml = '<strong>Tài liệu tham khảo:</strong><ul>';
+                        Object.keys(citationsData).forEach((key) => {
+                            const src = citationsData[key];
+                            const m = src.metadata || {};
+                            const title = m.title || m.doc_num || 'Văn bản không tên';
+                            const article = m.article || m.khoan || '';
+                            refsHtml += `<li>[${key}] ${title} ${article ? '- ' + article : ''}</li>`;
+                        });
+                        refsHtml += '</ul>';
+                        refsContainer.innerHTML = refsHtml;
+                        
+                        answerContainer.querySelectorAll("pre code").forEach((el) => {
+                            hljs.highlightElement(el);
+                        });
+                    }
+                }
+            } catch (err) {
+                answerContainer.innerHTML += `<br><span style="color:red">Lỗi: ${err.message}</span>`;
+            } finally {
+                sendBtn.disabled = false;
+                userInput.focus();
+            }
         }
-    }
-</script>
+    </script>
 </body>
 </html>
