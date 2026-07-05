@@ -29,7 +29,24 @@
             background: #2c3e50;
             color: white;
             text-align: center;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
+
+        .header h2 { margin: 0; flex: 1; }
+
+        .header-btn {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.5);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+
+        .header-btn:hover { background: rgba(255,255,255,0.15); }
 
         .chat-box {
             flex: 1;
@@ -48,7 +65,7 @@
             align-items: center;
         }
 
-        input[type="text"] {
+        textarea[type="text"] {
             flex: 1;
             padding: 12px;
             border: 1px solid #ddd;
@@ -130,7 +147,7 @@
 
         .tooltip {
             visibility: hidden;
-            width: 250px;
+            width: 500px;
             background-color: #333;
             color: #fff;
             text-align: left;
@@ -195,6 +212,7 @@
     <div class="container">
         <div class="header">
             <h2>Trợ Lý Pháp Lý AI</h2>
+            <button class="header-btn" onclick="resetConversation()">Cuộc trò chuyện mới</button>
         </div>
         <div class="chat-box" id="chatBox"></div>
         <div class="input-area">
@@ -202,8 +220,8 @@
                 <label for="streamToggle">Stream:</label>
                 <input type="checkbox" id="streamToggle" checked>
             </div>
-            <input type="text" id="userInput" placeholder="Nhập câu hỏi pháp lý..."
-                onkeypress="if(event.key==='Enter') sendMessage()">
+                <textarea  type="text" id="userInput" placeholder="Nhập câu hỏi pháp lý..."
+                onkeypress="if(event.key==='Enter') sendMessage()"></textarea>
             <button onclick="sendMessage()" id="sendBtn">Gửi</button>
         </div>
     </div>
@@ -220,6 +238,16 @@
         const sendBtn = document.getElementById('sendBtn');
         const streamToggle = document.getElementById('streamToggle');
 
+        // --- Lịch sử hội thoại (gửi lên backend mỗi lần chat) ---
+        // Chỉ chứa { role: 'user'|'assistant', content: string }, không lưu steps/citations.
+        let conversationHistory = [];
+
+        function resetConversation() {
+            conversationHistory = [];
+            chatBox.innerHTML = "";
+            userInput.focus();
+        }
+
         function renderMarkdown(text, sources) {
             const withCitation = parseCitations(text, sources);
             return marked.parse(withCitation);
@@ -230,7 +258,7 @@
                 const source = sources[number];
                 if (!source) return match;
 
-                const snippet = source.content ? source.content.substring(0, 150) + '...' : 'Không có nội dung';
+                const snippet = source.content ? source.content.substring(0, 1000) + '...' : 'Không có nội dung';
                 const meta = source.metadata || {};
                 const title = meta.title || meta.doc_num || 'Văn bản không tên';
 
@@ -253,6 +281,8 @@
             if (!question) return;
 
             appendMessage('user', question);
+            conversationHistory.push({ role: 'user', content: question });
+
             userInput.value = '';
             sendBtn.disabled = true;
 
@@ -312,6 +342,8 @@
                 } else if (step === 'answer') {
                     if (status === 'start') {
                         stepsHtml += `<div class="step-log done">✍️ Đang tổng hợp câu trả lời...</div>`;
+                    } else if (status === 'error') {
+                        stepsHtml += `<div class="step-log done" style="color:#c0392b">❌ Lỗi: ${d.error || 'Không xác định'}</div>`;
                     }
                 }
                 
@@ -347,20 +379,15 @@
                     const renderedHtml = renderMarkdown(fullText, citationsData);
                     answerContainer.innerHTML = renderedHtml;
                     
-                    let refsHtml = '<strong>Tài liệu tham khảo:</strong><ul>';
-                    Object.keys(citationsData).forEach((key) => {
-                        const src = citationsData[key];
-                        const m = src.metadata || {};
-                        const title = m.title || m.doc_num || 'Văn bản không tên';
-                        const article = m.article || m.khoan || '';
-                        refsHtml += `<li>[${key}] ${title} ${article ? '- ' + article : ''}</li>`;
-                    });
-                    refsHtml += '</ul>';
+                    
                     refsContainer.innerHTML = refsHtml;
                     
                     answerContainer.querySelectorAll("pre code").forEach((el) => {
                         hljs.highlightElement(el);
                     });
+
+                    // Lưu câu trả lời của bot vào lịch sử hội thoại để lượt sau gửi lên backend
+                    conversationHistory.push({ role: 'assistant', content: fullText });
                 }
             }
 
@@ -369,7 +396,7 @@
                     const response = await fetch('/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ question, stream: true })
+                        body: JSON.stringify({ messages: conversationHistory, stream: true })
                     });
 
                     const reader = response.body.getReader();
@@ -410,7 +437,7 @@
                     const response = await fetch('/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ question, stream: false })
+                        body: JSON.stringify({ messages: conversationHistory, stream: false })
                     });
                     const data = await response.json();
 
@@ -441,6 +468,9 @@
                         answerContainer.querySelectorAll("pre code").forEach((el) => {
                             hljs.highlightElement(el);
                         });
+
+                        // Lưu câu trả lời của bot vào lịch sử hội thoại
+                        conversationHistory.push({ role: 'assistant', content: fullText });
                     }
                 }
             } catch (err) {

@@ -7,7 +7,7 @@ from services.OpenAIExtended import OpenAIExtended
 load_dotenv()
 
 # --- CẤU HÌNH CHAT ---
-CHAT_MODEL_NAME = os.getenv('CHAT_MODEL_NAME', 'qwen3-4b')
+CHAT_MODEL_NAME = os.getenv('CHAT_MODEL_NAME', 'qwen3.5-2b')
 CHAT_BASE_URL = os.getenv("CHAT_BASE_URL", "http://localhost:1234/v1")
 CHAT_API_KEY = os.getenv("CHAT_API_KEY", 'dont need')
 
