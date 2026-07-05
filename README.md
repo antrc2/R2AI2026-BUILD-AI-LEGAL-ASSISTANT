@@ -3,8 +3,8 @@
 
 ## Demo
 
-<video controls width="800">
-  <source src="./assets/AI Legal Assistant.mp4.mp4" type="video/mp4">
+<video controls autoplay muted playsinline>
+  <source src="https://raw.githubusercontent.com/antrc2/R2AI2026-BUILD-AI-LEGAL-ASSISTANT/main/assets/AI%20Legal%20Assistant.mp4" type="video/mp4">
   Trình duyệt của bạn không hỗ trợ video.
 </video>
 
