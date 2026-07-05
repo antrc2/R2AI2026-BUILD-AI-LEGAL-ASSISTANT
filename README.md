@@ -1,66 +1,173 @@
 # RAG Chatbot API - Hỏi đáp Pháp luật Việt Nam
 
-
 ## Demo
 https://github.com/user-attachments/assets/ebe2d6a9-bf41-427c-83c1-a3005e9f8534
 
 
 ## Giới thiệu
 
-Dự án cung cấp API chatbot hỏi đáp về pháp luật Việt Nam sử dụng mô hình RAG (Retrieval-Augmented Generation). Hệ thống cho phép người dùng đặt câu hỏi và nhận câu trả lời dựa trên cơ sở dữ liệu văn bản pháp luật, với khả năng streaming từng bước xử lý của pipeline.
+Dự án cung cấp API chatbot hỏi đáp về pháp luật Việt Nam sử dụng kiến trúc RAG (Retrieval-Augmented Generation), hỗ trợ hội thoại nhiều lượt (multi-turn) và streaming theo thời gian thực từng bước xử lý của pipeline (phân tích câu hỏi → tìm kiếm tài liệu → tra cứu chéo văn bản → sinh câu trả lời có trích dẫn).
 
 ## Cấu trúc dự án
 
 ```
 project/
-├── services/
-│   ├── __init__.py
-│   ├── Chat.py              # (Không cần sửa) Client Chat cơ bản
-│   ├── OpenAIExtended.py    # (Không cần sửa) OpenAI client mở rộng
-│   ├── Search.py            # (Không cần sửa) Module tìm kiếm cơ bản
-│   └── RAGPipeline.py       # ✨ MỚI: Pipeline RAG chính cho API
 ├── api/
 │   ├── __init__.py
-│   ├── app.py               # ✨ MỚI: FastAPI application
+│   ├── app.py                # FastAPI application (endpoint /chat, /health, /)
 │   └── templates/
-│       └── index.html       # ✨ MỚI: Giao diện chatbot web
-├── data/                    # Thư mục chứa FAISS index và maps
+│       └── index.html        # Giao diện chatbot web (vanilla JS + SSE)
+├── services/
+│   ├── __init__.py
+│   ├── Chat.py                # Client Chat (OpenAI-compatible), embedding, rerank
+│   ├── OpenAIExtended.py      # OpenAI client mở rộng (thêm endpoint reranker)
+│   ├── Search.py              # Semantic search (FAISS) + tra cứu theo doc_ref
+│   └── RAGPipeline.py         # Pipeline RAG chính: sub-query → retrieval → tool-call → answer
+├── data/                      # FAISS index và các map dữ liệu (tải riêng)
 │   ├── faiss.index
 │   ├── faiss_id_map.json
 │   ├── chunk_map.json
 │   ├── article_index_map.json
 │   └── chunks.json
-├── main_only_search.py      # (Giữ nguyên) Code gốc batch processing
-├── search_v2.py             # (Giữ nguyên) Module tìm kiếm & rerank
-├── requirements.txt         # ✨ Cập nhật thêm dependencies mới
-├── main.py                  # Entry point để chạy server
-└── README.md                # Tài liệu này
+├── requirements.txt
+├── main.py                    # Entry point chạy server (uvicorn)
+└── README.md                  # Tài liệu này
 ```
+
+## Kiến trúc pipeline
+
+Khác với cách xử lý 2 lượt gọi LLM tách rời (1 lần quyết định tool call, 1 lần sinh câu trả lời), `RAGPipeline` gộp bước quyết định tool-call và sinh câu trả lời vào **một luồng streaming duy nhất**: LLM vừa có thể trả lời trực tiếp (`delta.content`) vừa có thể gọi tool (`delta.tool_calls`) ngay trong cùng 1 lần gọi API, giảm độ trễ và giữ nguyên ngữ cảnh hội thoại giữa các bước.
+
+```
+Hội thoại (messages: [user, assistant, user, ...])
+  │
+  ▼
+[Bước 1] Sub-query
+  └─► Gộp toàn bộ hội thoại thành 1 khối text
+  └─► LLM (non-stream, structured output) tách thành các sub-query độc lập
+  │
+  ▼
+[Bước 2] Retrieval
+  └─► Semantic search (FAISS) cho từng sub-query
+  └─► Deduplicate theo chunk_id, giới hạn MAX_CONTEXT_CHUNKS
+  │
+  ▼
+[Bước 3+4] Answer (streaming, gộp làm 1 lần gọi LLM)
+  └─► Đưa [system prompt, context + quy tắc trích dẫn, ...toàn bộ hội thoại gốc] vào LLM (stream=True)
+  └─► Nếu LLM sinh nội dung (delta.content) → stream trực tiếp ra client
+  └─► Nếu LLM gọi tool `search_referenced_document` (delta.tool_calls)
+        → tra cứu thêm chunk theo doc_ref/điều/khoản cụ thể
+        → cập nhật lại context, gọi lại LLM (tối đa MAX_TOOL_ITERATIONS lần)
+  │
+  ▼
+Trả về: câu trả lời kèm citation [N] + citation_map (map số thứ tự → chunk nguồn)
+```
+
+Toàn bộ các lệnh gọi LLM trong bước 3+4 chạy nối tiếp trong **cùng một danh sách `messages`** (đúng chuẩn tool-calling của OpenAI: `assistant` message chứa `tool_calls` → `tool` message chứa kết quả) để LLM giữ được ngữ cảnh xuyên suốt qua các vòng tra cứu.
 
 ## Cài đặt
 
 ### Yêu cầu hệ thống
 
-- Python 3.8+
-- Các service bên ngoài:
-  - LLM API (icllmlib compatible)
-  - Embedding API (OpenAI compatible)
-  - Reranker API (FastAPI endpoint)
+- Python 3.10+
+- Các service bên ngoài (API tương thích OpenAI):
+  - **Chat LLM** — hỗ trợ streaming + function calling
+  - **Embedding model**
+  - **Reranker** (tùy chọn — nếu không cấu hình, `Chat.py` giữ nguyên thứ tự kết quả semantic search)
 
 ### Cài đặt dependencies
 
 ```bash
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
+```
+
+`requirements.txt` (tối thiểu):
+
+```
+fastapi
+uvicorn[standard]
+jinja2
+openai
+python-dotenv
+faiss-cpu
+requests
 ```
 
 ### Chuẩn bị dữ liệu
 
-Đảm bảo thư mục `data/` chứa các file sau:
-- `faiss.index` - FAISS index đã được build
-- `faiss_id_map.json` - Map từ FAISS ID sang chunk ID
-- `chunk_map.json` - Metadata của các chunks
-- `article_index_map.json` - Index map cho articles
-- `chunks.json` - Danh sách chunks với embed_text
+Đảm bảo thư mục `data/` chứa đủ:
+- `faiss.index` — FAISS index đã build
+- `faiss_id_map.json` — map FAISS ID → chunk ID
+- `chunk_map.json` — metadata của các chunk
+- `article_index_map.json` — index map theo Điều/Khoản để phục vụ tool `search_referenced_document`
+- `chunks.json` — nội dung text gốc của từng chunk (dùng để build context)
+
+## Cấu hình
+
+`services/Chat.py` đọc cấu hình từ biến môi trường (file `.env` ở thư mục gốc):
+
+```env
+# --- Chat model ---
+CHAT_MODEL_NAME=qwen3-4b
+CHAT_BASE_URL=http://localhost:1234/v1
+CHAT_API_KEY=dont need
+
+# --- Embedding model ---
+EMBEDDING_MODEL_NAME=text-embedding-qwen3-embedding-0.6b
+EMBEDDING_BASE_URL=http://localhost:1234/v1
+EMBEDDING_API_KEY=dont need
+
+# --- Reranker (tùy chọn, để trống nếu không dùng) ---
+RERANKER_MODEL_NAME=
+RERANKER_BASE_URL=
+RERANKER_API_KEY=
+```
+
+> Nếu để trống 1 trong 3 biến `RERANKER_*`, `ChatService` sẽ không khởi tạo `rerank_client` và tự động giữ nguyên thứ tự tài liệu từ semantic search thay vì rerank.
+
+### Ví dụ host model bằng llama.cpp / vLLM
+
+Nếu chưa có sẵn service LLM/embedding tương thích OpenAI, có thể tự host bằng `llama-server` (llama.cpp):
+
+```bash
+# Chat model
+./llama-server \
+  -m /path/to/model-chat.gguf \
+  --host 0.0.0.0 --port 1234 \
+  --ctx-size 32768 \
+  --n-gpu-layers 999
+```
+
+```bash
+# Embedding model (cổng riêng, thêm cờ --embedding)
+./llama-server \
+  -m /path/to/model-embedding.gguf \
+  --host 0.0.0.0 --port 1235 \
+  --embedding --ctx-size 4096
+```
+
+Reranker (tùy chọn) có thể host bằng vLLM, ví dụ với `Qwen3-Reranker-0.6B`:
+
+```bash
+docker run --rm --gpus all \
+  --name reranker \
+  -p 1236:8000 \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-Reranker-0.6B \
+  --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
+  --dtype float16 --max-model-len 2048 \
+  --gpu-memory-utilization 0.4 --enforce-eager
+```
+
+Sau đó cập nhật `.env` cho khớp cổng/model đang chạy. Kiểm tra nhanh:
+
+```bash
+curl http://localhost:1234/v1/models
+curl http://localhost:1235/v1/models
+```
 
 ## Chạy server
 
@@ -68,208 +175,149 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Server sẽ chạy tại `http://localhost:8000`
+Hoặc chạy trực tiếp bằng uvicorn:
+
+```bash
+uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Server chạy tại `http://localhost:8000`.
 
 ## API Endpoints
 
-### 1. GET `/` - Trang chủ chatbot
+### 1. `GET /` — Trang chủ chatbot
 
-Trả về giao diện web chatbot để người dùng tương tác trực tiếp.
+Trả về giao diện web (`api/templates/index.html`) để tương tác trực tiếp qua trình duyệt, có toggle bật/tắt streaming và hiển thị pipeline steps theo thời gian thực.
 
-### 2. POST `/chat` - Endpoint chat chính
+### 2. `POST /chat` — Endpoint chat chính
 
 **Request:**
+
 ```json
 {
-  "question": "Câu hỏi của bạn",
+  "messages": [
+    { "role": "user", "content": "Doanh nghiệp nhỏ và vừa được ưu đãi thuế TNDN như thế nào?" },
+    { "role": "assistant", "content": "Theo Luật Hỗ trợ DNNVV..." },
+    { "role": "user", "content": "Vậy còn thuế VAT thì sao?" }
+  ],
   "stream": true
 }
 ```
 
 **Parameters:**
-- `question` (string, required): Câu hỏi cần trả lời
-- `stream` (boolean, optional, default=true): 
-  - `true`: Trả về Server-Sent Events (SSE) stream với từng bước pipeline
-  - `false`: Trả về JSON một lần với kết quả cuối cùng
 
-**Response (stream=true):**
+| Field      | Kiểu             | Bắt buộc | Mô tả                                                                 |
+|------------|------------------|----------|------------------------------------------------------------------------|
+| `messages` | `List[ChatMessage]` | có     | Toàn bộ lịch sử hội thoại, mỗi phần tử `{"role": "user"\|"assistant", "content": "..."}`. Không cần gửi kèm `system` message — pipeline tự thêm. |
+| `stream`   | `bool`           | không (mặc định `true`) | `true`: trả về Server-Sent Events; `false`: trả JSON một lần khi xử lý xong toàn bộ. |
 
-SSE events với các bước:
+Client cần tự lưu và gửi lại toàn bộ `messages` ở mỗi lượt gọi (bao gồm cả các câu trả lời `assistant` trước đó) để giữ ngữ cảnh hội thoại nhiều lượt.
 
-1. **sub_queries** - Phân tích câu hỏi thành sub-queries
-```json
-{
-  "step": "sub_queries",
-  "status": "processing",
-  "message": "Đang phân tích câu hỏi thành sub-queries..."
-}
-```
+**Response khi `stream=true` (Server-Sent Events):**
+
+Mỗi dòng có định dạng `data: {...}\n\n`, kết thúc bằng `data: [DONE]\n\n`. Các event theo đúng thứ tự pipeline:
 
 ```json
-{
-  "step": "sub_queries",
-  "status": "completed",
-  "data": {
-    "sub_queries": ["query 1", "query 2"],
-    "count": 2
-  }
-}
+{"step": "sub_queries", "status": "processing", "data": null}
+{"step": "sub_queries", "status": "done", "data": {"queries": ["...", "..."]}}
+
+{"step": "retrieval", "status": "processing", "data": null}
+{"step": "retrieval", "status": "done", "data": {"count": 18}}
+
+{"step": "tool_call", "status": "processing", "data": null}
+{"step": "answer", "status": "start", "data": null}
+
+{"step": "tool_call", "status": "detected", "data": {"args": {"doc_ref": "04/2017/QH14", "content_query": "ưu đãi thuế VAT"}}}
+{"step": "tool_call", "status": "executed", "data": {"found_count": 4}}
+{"step": "tool_call", "status": "done", "data": null}
+
+{"step": "answer", "status": "streaming", "data": {"chunk": "Theo quy định tại", "citations": {"1": {"content": "...", "metadata": {}}, "2": {}}}}
+{"step": "answer", "status": "streaming", "data": {"chunk": " Điều 5 [1]...", "citations": {}}}
+
+{"step": "answer", "status": "done", "data": {
+  "text": "Toàn bộ câu trả lời hoàn chỉnh, có trích dẫn [1], [2]...",
+  "citations": {"1": {"content": "...", "metadata": {}}, "2": {}},
+  "sources": [{"chunk_id": "...", "content": "...", "metadata": {}}]
+}}
 ```
 
-2. **retrieval** - Tìm kiếm tài liệu
-```json
-{
-  "step": "retrieval",
-  "status": "completed",
-  "data": {
-    "total_found": 15,
-    "results": [
-      {
-        "ref_id": 1,
-        "doc_num": "04/2017/QH14",
-        "doc_name": "Luật 04/2017/QH14 Luật Hỗ trợ doanh nghiệp nhỏ và vừa",
-        "article": "Điều 5",
-        "score": 0.85,
-        "text": "Nội dung chunk..."
-      }
-    ]
-  }
-}
-```
+Nếu xảy ra lỗi ở bất kỳ bước nào: `{"step": "answer", "status": "error", "data": {"error": "..."}}`.
 
-3. **tool_call** - Kiểm tra sử dụng tool
-```json
-{
-  "step": "tool_call",
-  "status": "completed",
-  "data": {
-    "used_tool": false,
-    "message": "Không sử dụng tool ngoài"
-  }
-}
-```
+> `citations` là map `{"số thứ tự (string)": chunk object}` tương ứng đúng với các số `[N]` xuất hiện trong text câu trả lời — dùng để frontend render tooltip/tham chiếu nguồn.
 
-4. **answer** - Sinh câu trả lời
-```json
-{
-  "step": "answer",
-  "status": "completed",
-  "data": {
-    "answer": "Nội dung câu trả lời với [1], [2]...",
-    "used_refs": [1, 2],
-    "relevant_docs": ["04/2017/QH14|Luật..."],
-    "relevant_articles": ["04/2017/QH14|Luật...|Điều 5"],
-    "references_info": [
-      {
-        "ref_id": 1,
-        "doc_num": "04/2017/QH14",
-        "doc_name": "Luật 04/2017/QH14 Luật Hỗ trợ doanh nghiệp nhỏ và vừa",
-        "article": "Điều 5",
-        "text": "Nội dung đầy đủ của chunk..."
-      }
-    ]
-  }
-}
-```
-
-**Response (stream=false):**
+**Response khi `stream=false`:**
 
 ```json
 {
-  "step": "final",
-  "status": "completed",
-  "data": {
-    "answer": "Nội dung câu trả lời với [1], [2]...",
-    "used_refs": [1, 2],
-    "relevant_docs": ["04/2017/QH14|Luật..."],
-    "relevant_articles": ["04/2017/QH14|Luật...|Điều 5"],
-    "references_info": [...],
-    "pipeline_steps": {
-      "sub_queries": ["query 1", "query 2"],
-      "retrieval_count": 15
-    }
-  }
+  "steps": [
+    {"step": "sub_queries", "status": "done", "data": {"queries": ["..."]}},
+    {"step": "retrieval", "status": "done", "data": {"count": 18}},
+    {"step": "tool_call", "status": "executed", "data": {"found_count": 4}},
+    {"step": "answer", "status": "done", "data": {"text": "...", "citations": {}, "sources": []}}
+  ],
+  "final_answer": "Toàn bộ câu trả lời hoàn chỉnh...",
+  "citations": {"1": {}, "2": {}},
+  "sources": [{}]
 }
 ```
 
-### 3. GET `/health` - Health check
+### 3. `GET /health` — Health check
 
 ```json
-{
-  "status": "ok",
-  "message": "RAG Chatbot API is running"
-}
+{ "status": "ok" }
 ```
 
-## Tính năng giao diện web
+## Giao diện web
 
-Khi truy cập `http://localhost:8000`, bạn sẽ thấy:
+Truy cập `http://localhost:8000` để dùng giao diện chat có sẵn:
 
-1. **Khung chat** - Hiển thị lịch sử hội thoại
-2. **Toggle Streaming** - Bật/tắt chế độ streaming
-3. **Hiển thị pipeline steps** - Khi stream=true, hiển thị từng bước:
-   - ⏳ Phân tích câu hỏi (số lượng sub-queries)
-   - 🔍 Tìm kiếm tài liệu (số kết quả tìm được)
-   - 🛠️ Kiểm tra tool call
-   - 💬 Sinh câu trả lời
-4. **Citation hover** - Di chuột vào [1], [2] để xem thông tin tài liệu tham khảo
-5. **References section** - Danh sách tài liệu tham khảo cuối câu trả lời
+- **Khung chat** — hiển thị lịch sử hội thoại (frontend tự lưu `messages` và gửi lại đầy đủ mỗi lượt)
+- **Toggle Streaming** — bật/tắt SSE
+- **Steps log** — hiển thị theo thời gian thực từng bước: 🔍 phân tích câu hỏi, 📚 tìm kiếm tài liệu, 🛠️ tra cứu văn bản chéo, ✍️ đang tổng hợp câu trả lời
+- **Citation hover** — di chuột vào `[1]`, `[2]`... để xem snippet nguồn
+- **Danh sách tài liệu tham khảo** — hiển thị cuối mỗi câu trả lời
+- **Nút "Cuộc trò chuyện mới"** — xóa lịch sử hội thoại phía client
 
-## Pipeline xử lý
+## Xử lý streaming ở tầng server
 
-Quy trình xử lý một câu hỏi:
+`RAGPipeline.process()` là một generator đồng bộ (chứa các lời gọi HTTP blocking tới LLM/search). Để tránh việc các bước xử lý ban đầu (sub-query, retrieval) bị "kẹt" lại và chỉ được đẩy ra client dồn cục cùng lúc với streaming câu trả lời, `api/app.py` chạy pipeline trong **một thread riêng**, đẩy từng event qua `queue.Queue`, và phía consumer (`async def event_generator`) đọc queue qua `run_in_executor` — nhờ vậy event loop của FastAPI/Uvicorn không bị block, mỗi bước được flush ra SSE ngay khi hoàn thành.
 
-```
-1. Sub-queries
-   └─► Phân tích câu hỏi gốc thành các câu hỏi con (nếu cần)
-   
-2. Retrieval
-   └─► FAISS search cho mỗi query
-   └─► Gộp candidates vào pool
-   └─► Rerank toàn bộ pool theo câu hỏi gốc
-   └─► Lọc theo threshold
-   
-3. Tool Call Check
-   └─► Kiểm tra có cần dùng tool ngoài không (hiện tại không dùng)
-   
-4. Answer Generation
-   └─► Build context từ retrieved documents
-   └─► LLM sinh câu trả lời với citations [N]
-   └─► Trích xuất used_refs từ câu trả lời
-   └─► Build relevant_docs và relevant_articles
-```
+Response SSE cũng được gửi kèm header `Cache-Control: no-cache` và `X-Accel-Buffering: no` để tránh bị buffer nếu sau này triển khai sau reverse proxy (nginx).
 
-## Configuration
+## Cấu hình tham số pipeline
 
-Các tham số có thể điều chỉnh trong `services/RAGPipeline.py`:
+Trong `services/RAGPipeline.py`:
 
 ```python
-PER_QUERY_FAISS_K  = 45    # Số candidate lấy từ FAISS cho mỗi query
-GLOBAL_RERANK_CAP  = 200   # Giới hạn pool trước khi rerank
-FINAL_CONTEXT_K    = 20    # Số chunk tối đa đưa vào context
-RERANK_THRESHOLD   = 0.35  # Ngưỡng lọc sau rerank
-
-ENABLE_FOLLOWUP_LOOKUP = False  # Bật/tắt tra cứu thêm
-MAX_FOLLOWUP_ROUNDS    = 2      # Số vòng tra cứu thêm tối đa
-FOLLOWUP_TOPK          = 6      # Số chunk lấy thêm mỗi vòng
+self.MAX_CONTEXT_CHUNKS = 20      # Số chunk tối đa đưa vào context mỗi lượt
+self.MAX_TOOL_ITERATIONS = 3      # Số vòng tối đa LLM được gọi lại tool search_referenced_document
 ```
+
+## Tool tra cứu chéo văn bản
+
+Khi LLM phát hiện ngữ cảnh nhắc tới một văn bản khác (ví dụ "theo Luật X", "hướng dẫn tại Thông tư Y") mà cần chi tiết cụ thể để trả lời chính xác, nó có thể tự gọi tool:
+
+```json
+{
+  "name": "search_referenced_document",
+  "arguments": {
+    "doc_ref": "36/2015/QĐ-TTg",
+    "dieu_filter": "Điều 74",
+    "khoan_filter": "Khoản 3",
+    "content_query": "điều kiện áp dụng"
+  }
+}
+```
+
+Pipeline gọi `SearchService.doc_ref_search(...)` để lấy thêm chunk liên quan, cập nhật vào context, rồi gọi lại LLM với ngữ cảnh mới — lặp lại tối đa `MAX_TOOL_ITERATIONS` lần trước khi buộc phải tổng hợp câu trả lời cuối cùng.
 
 ## Lưu ý
 
-- **LLM API**: Cần có service LLM tương thích icllmlib chạy tại `URL_LLM_API`
-- **Embedding API**: Cần có service embedding OpenAI-compatible
-- **Reranker API**: Cần có reranker FastAPI endpoint
-- **Dữ liệu**: Cần chuẩn bị đầy đủ FAISS index và maps trước khi chạy
-
-## Demo
-
-Để demo nhanh:
-
-1. Khởi động server: `python main.py`
-2. Mở trình duyệt tại `http://localhost:8000`
-3. Nhập câu hỏi và nhấn Gửi
-4. Xem kết quả streaming từng bước hoặc JSON tùy chế độ
+- **Ngữ cảnh hội thoại nhiều lượt**: mỗi lượt gọi `/chat`, backend chỉ đính kèm context (tài liệu RAG) tương ứng cho câu hỏi mới nhất — các câu trả lời `assistant` ở lượt trước vẫn nằm trong `messages` nhưng không kèm theo nguồn trích dẫn cũ. Nếu người dùng hỏi tiếp về một trích dẫn `[N]` ở lượt trước, model có thể không còn "nhìn thấy" đúng nguồn đó trừ khi client tự giữ và gửi lại citation map liên quan.
+- **LLM API**: cần hỗ trợ streaming (`stream=True`) và function calling (`tools`) theo chuẩn OpenAI Chat Completions.
+- **Embedding/Reranker**: cần endpoint tương thích OpenAI; reranker là tùy chọn.
+- **Dữ liệu**: cần chuẩn bị đầy đủ FAISS index và các file map trong `data/` trước khi chạy.
 
 ## Tác giả
 
-Developed for Vietnamese Legal Q&A RAG system." 
+Được phát triển bởi **AnTrc2** — team **Bee IT** — trong khuôn khổ cuộc thi [R2AI 2026](https://r2ai.aiguru.com.vn/) — hạng mục xây dựng trợ lý AI hỏi đáp pháp luật Việt Nam.
