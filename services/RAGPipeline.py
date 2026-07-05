@@ -58,17 +58,18 @@ SUB_QUERY_SCHEMA = {
     }
 }
 
+
 class RAGPipeline:
     def __init__(self):
         self.chat_service = ChatService()
         self.search_service = SearchService()
         # Giới hạn số chunk tối đa trong context để tránh tràn token
-        self.MAX_CONTEXT_CHUNKS = 20 
+        self.MAX_CONTEXT_CHUNKS = 50
+        self.MAX_TOOL_ITERATIONS = 3
 
     def _parse_sub_queries(self, content: str) -> List[str]:
         """Parse JSON response từ LLM để lấy danh sách sub-queries."""
         try:
-            # Loại bỏ markdown code block nếu có
             clean_content = re.sub(r'```json\s*|\s*```', '', content).strip()
             data = json.loads(clean_content)
             queries = data.get("queries", [])
@@ -76,65 +77,116 @@ class RAGPipeline:
                 return queries
             return [content]
         except (json.JSONDecodeError, Exception):
-            # Fallback: coi toàn bộ nội dung là 1 query
             return [content]
 
     def _format_context(self, docs: List[Dict]) -> str:
         """Format context thành dạng [1]: content, [2]: content..."""
         if not docs:
             return "Không có thông tin ngữ cảnh nào."
-        return "\n\n".join([f"[{i+1}]: {d.get('content', '')}" for i, d in enumerate(docs)])
+        return "\n\n".join([f"[{i + 1}]: {d.get('content', '')}" for i, d in enumerate(docs)])
 
     def _deduplicate_docs(self, docs: List[Dict]) -> List[Dict]:
         """Loại bỏ các document trùng lặp dựa trên chunk_id."""
         seen = set()
         unique_docs = []
         for doc in docs:
-            # Ưu tiên dùng chunk_id, nếu không có thì dùng hash của content
             doc_id = doc.get('chunk_id') or hash(doc.get('content', ''))
             if doc_id not in seen:
                 seen.add(doc_id)
                 unique_docs.append(doc)
         return unique_docs
 
-    def process(self, question: str, stream: bool = True) -> Generator[Dict[str, Any], None, None]:
-        """Pipeline xử lý chính."""
-        
-        # Khởi tạo history chat cơ bản
+    def _flatten_conversation(self, messages: List[Dict[str, str]]) -> str:
+        """Nối toàn bộ hội thoại (role + content) thành 1 khối text,
+        dùng để phân tích sub-query và semantic search."""
+        role_labels = {"user": "Người dùng", "assistant": "Trợ lý", "system": "Hệ thống"}
+        lines = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "") or ""
+            if not content:
+                continue
+            label = role_labels.get(role, role)
+            lines.append(f"{label}: {content}")
+        return "\n".join(lines)
+
+    def _get_last_user_question(self, messages: List[Dict[str, str]]) -> str:
+        """Lấy câu hỏi mới nhất của user, dùng để log / fallback."""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                return m.get("content", "")
+        return ""
+
+    def _build_context_message(self, context_docs: List[Dict]) -> Dict[str, str]:
+        """Tạo 1 system/user message chứa ngữ cảnh + quy tắc trích dẫn,
+        được chèn vào NGAY TRƯỚC lượt hội thoại của user để LLM luôn thấy
+        context mới nhất mà không phá vỡ cấu trúc nhiều lượt hội thoại."""
+        context_text = self._format_context(context_docs)
+        return {
+            "role": "system",
+            "content": f"""Dựa trên ngữ cảnh pháp lý sau để trả lời câu hỏi mới nhất của người dùng trong hội thoại:
+{context_text}
+
+QUY TẮC TRÍCH DẪN BẮT BUỘC:
+- Mọi thông tin lấy từ ngữ cảnh đều phải trích dẫn nguồn.
+- Sử dụng CHÍNH XÁC định dạng [N] (ví dụ: [1], [2], [3]).
+- KHÔNG thêm khoảng trắng (không dùng [ 1 ]), KHÔNG dùng định dạng khác.
+- Đặt mã trích dẫn ở cuối câu hoặc cuối ý tương ứng.
+- Nếu ngữ cảnh NHẮC ĐẾN một văn bản khác (vd: "theo Luật X") và bạn CẦN chi tiết từ văn bản đó để trả lời
+  chính xác, hãy gọi tool `search_referenced_document` thay vì trả lời ngay.
+- Nếu không tìm thấy thông tin trong ngữ cảnh, hãy nói rõ là không có thông tin.
+- Hãy tham khảo các lượt hội thoại trước đó (nếu có) để hiểu đúng ý người dùng, nhưng chỉ trích dẫn [N]
+  cho thông tin lấy từ ngữ cảnh pháp lý ở trên.""",
+        }
+
+    def process(self, messages: List[Dict[str, str]], stream: bool = True) -> Generator[Dict[str, Any], None, None]:
+        """Pipeline xử lý chính.
+
+        messages: lịch sử hội thoại dạng [{"role": "user"/"assistant", "content": "..."}]
+        theo đúng thứ tự thời gian, không cần chứa system prompt (pipeline tự thêm).
+        """
+
         system_prompt = (
             "Bạn là trợ lý pháp lý thông minh. Hãy trả lời chính xác, chuyên nghiệp dựa trên ngữ cảnh được cung cấp. "
             "Nếu không tìm thấy thông tin trong ngữ cảnh, hãy nói rõ là không có thông tin."
         )
-        current_messages = [
-            {"role": "system", "content": system_prompt},
-        ]
+
+        # Lọc bỏ mọi system message người dùng gửi lên (pipeline tự quản lý system prompt)
+        conversation = [m for m in messages if m.get("role") in ("user", "assistant") and m.get("content")]
+        if not conversation:
+            yield {"step": "answer", "status": "error", "data": {"error": "Không có nội dung hội thoại hợp lệ."}}
+            return
+
+        question = self._get_last_user_question(conversation)
+        conversation_text = self._flatten_conversation(conversation)
 
         # ==========================================
-        # BƯỚC 1: SUB-QUERY (Phân tích câu hỏi)
+        # BƯỚC 1: SUB-QUERY (Phân tích câu hỏi, dựa trên TOÀN BỘ hội thoại)
         # ==========================================
         yield {"step": "sub_queries", "status": "processing", "data": None}
-        
+
         sub_query_prompt = (
-            f"Hãy phân tích câu hỏi sau thành các ý nhỏ (sub-queries) độc lập để tìm kiếm thông tin hiệu quả hơn. "
-            f"Trả về kết quả dưới dạng JSON thuần túy với key 'queries'.\n\nCâu hỏi: {question} /no_think"
+            f"Hãy phân tích đoạn hội thoại sau, tập trung vào ý định mới nhất của người dùng, "
+            f"và tách thành các ý nhỏ (sub-queries) độc lập để tìm kiếm thông tin hiệu quả hơn. "
+            f"Trả về kết quả dưới dạng JSON thuần túy với key 'queries'.\n\n"
+            f"--- Hội thoại ---\n{conversation_text} /no_think"
         )
-        
+
         try:
             sub_query_response = ""
-            # Gọi non-stream để lấy JSON chắc chắn
-            for chunk in self.chat_service.generate_response(
-                current_messages + [{"role": "user", "content": sub_query_prompt}], 
+            # stream=False -> ChatService yield đúng 1 lần: response.choices[0].message
+            for message in self.chat_service.generate_response(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": sub_query_prompt},
+                ],
                 response_format=SUB_QUERY_SCHEMA,
-                stream=False
+                stream=False,
             ):
-                # Xử lý cả object và dict tùy vào implementation của ChatService
-                if hasattr(chunk, 'content'):
-                    sub_query_response = chunk.content
-                elif isinstance(chunk, dict):
-                    sub_query_response = chunk.get('content', '')
-                else:
-                    sub_query_response = str(chunk)
-            
+                if isinstance(message, dict) and "error" in message:
+                    raise Exception(message["error"])
+                sub_query_response = getattr(message, "content", "") or ""
+
             sub_queries = self._parse_sub_queries(sub_query_response)
         except Exception as e:
             print(f"Lỗi khi parse sub-queries: {e}")
@@ -146,196 +198,204 @@ class RAGPipeline:
         # BƯỚC 2: SEARCH (Semantic Search ban đầu)
         # ==========================================
         yield {"step": "retrieval", "status": "processing", "data": None}
-        
+
         retrieved_docs = []
         for sq in sub_queries:
             try:
-                docs = self.search_service.semantic_search(query=sq, top_k=5)
+                docs = self.search_service.semantic_search(query=sq, top_k=15)
                 retrieved_docs.extend(docs)
             except Exception as e:
                 print(f"Lỗi search cho query '{sq}': {e}")
 
-        # Deduplicate và giới hạn số lượng
         unique_docs = self._deduplicate_docs(retrieved_docs)
-        initial_context_docs = unique_docs[:self.MAX_CONTEXT_CHUNKS]
-        
+        context_docs = unique_docs[:self.MAX_CONTEXT_CHUNKS]
+
         yield {
-            "step": "retrieval", 
-            "status": "done", 
-            "data": {"count": len(initial_context_docs)}
+            "step": "retrieval",
+            "status": "done",
+            "data": {"count": len(context_docs)},
         }
 
-        # ==========================================
-        # BƯỚC 3: LLM DECISION & TOOL CALLING LOOP
-        # ==========================================
-        # Thêm ngữ cảnh ban đầu vào prompt để LLM quyết định
-        initial_context_text = self._format_context(initial_context_docs)
-        
-        decision_prompt_content = f"""Dựa trên ngữ cảnh sau:
-{initial_context_text}
+        # ==========================================================
+        # BƯỚC 3+4 (GỘP): LLM STREAM — vừa quyết định tool call vừa
+        # trả lời trực tiếp trong CÙNG một lần gọi, giống code mẫu.
+        # Lặp tối đa MAX_TOOL_ITERATIONS lần nếu LLM liên tục gọi tool.
+        # ==========================================================
+        # Cấu trúc: [system prompt, system context+quy tắc trích dẫn, ...toàn bộ hội thoại gốc]
+        # Giữ nguyên multi-turn để LLM hiểu đúng mạch hội thoại, thay vì gộp hết vào 1 user message.
+        llm_messages = [
+            {"role": "system", "content": system_prompt},
+            self._build_context_message(context_docs),
+            *conversation,
+        ]
 
-Câu hỏi gốc: {question}
+        full_answer = ""
+        citation_map: Dict[str, Any] = {str(i + 1): d for i, d in enumerate(context_docs)}
 
-Yêu cầu xử lý:
-1. Nếu ngữ cảnh ĐÃ ĐỦ thông tin để trả lời: Hãy trả lời trực tiếp (không gọi tool).
-2. Nếu ngữ cảnh NHẮC ĐẾN một văn bản khác (ví dụ: "theo Luật X", "hướng dẫn tại Thông tư Y") và bạn CẦN chi tiết từ văn bản đó để trả lời chính xác: Hãy gọi tool `search_referenced_document` /no_think.
-"""
-        
-        # Thêm user message vào history
-        current_messages.append({"role": "user", "content": decision_prompt_content})
-        
-        yield {"step": "tool_call", "status": "processing", "data": None}
+        for iteration in range(self.MAX_TOOL_ITERATIONS):
+            did_tool_call = False
+            did_content = False
 
-        final_context_docs = list(initial_context_docs)
-        max_tool_iterations = 3 # Tránh loop vô hạn
-        
-        for iteration in range(max_tool_iterations):
-            # Gọi LLM để kiểm tra tool call (Non-stream)
+            # Buffer để gom các mảnh tool_call arguments bị chia nhỏ qua nhiều chunk
+            # key = index của tool call trong response (OpenAI có thể trả nhiều tool_calls song song)
+            tool_call_buffers: Dict[int, Dict[str, Any]] = {}
+
             try:
-                response_iter = self.chat_service.generate_response(
-                    current_messages,
+                response_stream = self.chat_service.generate_response(
+                    llm_messages,
                     tools=SEARCH_TOOLS,
-                    stream=False
+                    stream=True,
                 )
-                message_result = next(response_iter)
-                
-                # Kiểm tra xem có tool_calls không
-                tool_calls = getattr(message_result, 'tool_calls', None)
-                
-                if not tool_calls:
-                    # Không có tool call, thoát vòng lặp để trả lời
-                    break
-                
-                # Xử lý từng tool call
-                for tc in tool_calls:
-                    if tc.function.name == "search_referenced_document":
-                        try:
-                            args = json.loads(tc.function.arguments)
-                            yield {"step": "tool_call", "status": "detected", "data": {"args": args}}
-                            
-                            # Thực hiện tìm kiếm bổ sung
-                            extra_docs = self.search_service.doc_ref_search(
-                                query=args.get("content_query", question),
-                                doc_ref=args.get("doc_ref"),
-                                article_filter=args.get("dieu_filter"),
-                                clause_filter=args.get("khoan_filter"),
-                                top_k=5
-                            )
-                            
-                            if extra_docs:
-                                final_context_docs.extend(extra_docs)
-                                # Deduplicate lại toàn bộ sau khi thêm mới
-                                final_context_docs = self._deduplicate_docs(final_context_docs)[:self.MAX_CONTEXT_CHUNKS]
-                                
-                                yield {"step": "tool_call", "status": "executed", "data": {"found_count": len(extra_docs)}}
-                                
-                                # Tạo thông báo kết quả tool để đưa lại vào history cho LLM biết
-                                tool_result_content = f"Đã tìm thấy {len(extra_docs)} đoạn trích từ văn bản {args.get('doc_ref')}."
-                                # Lưu ý: Một số model yêu cầu format đặc biệt cho tool result, 
-                                # ở đây ta giả lập bằng cách thêm vào context hoặc message mới nếu cần.
-                                # Cách an toàn nhất là cập nhật lại context trong prompt cuối cùng.
-                                
-                            else:
-                                yield {"step": "tool_call", "status": "executed", "data": {"found_count": 0, "message": "Không tìm thấy thông tin"}}
+            except Exception as e:
+                yield {"step": "answer", "status": "error", "data": {"error": str(e)}}
+                return
 
-                        except Exception as e:
-                            print(f"Lỗi thực thi tool: {e}")
-                            yield {"step": "tool_call", "status": "error", "data": {"error": str(e)}}
+            if iteration == 0:
+                yield {"step": "tool_call", "status": "processing", "data": None}
+                yield {"step": "answer", "status": "start", "data": None}
 
-                # Nếu muốn hỗ trợ multi-turn tool calling thực sự, ta cần thêm assistant message và tool result vào history.
-                # Tuy nhiên, với kiến trúc RAG đơn giản, việc cập nhật lại `final_context_docs` và tạo prompt mới ở bước 4 là đủ.
-                # Ta break luôn sau khi lấy tool để sang bước generate answer với context mới.
-                break 
+            try:
+                for chunk in response_stream:
+                    # ChatService yield {"error": ...} thay vì raise khi có lỗi ở giữa stream
+                    if isinstance(chunk, dict) and "error" in chunk:
+                        raise Exception(chunk["error"])
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+
+                    # --- Trả lời trực tiếp (không cần tool) ---
+                    if getattr(delta, "content", None):
+                        did_content = True
+                        piece = delta.content
+                        full_answer += piece
+                        yield {
+                            "step": "answer",
+                            "status": "streaming",
+                            "data": {
+                                "chunk": piece,
+                                "citations": citation_map,
+                            },
+                        }
+
+                    # --- Tool call (có thể tới theo từng mảnh nhỏ) ---
+                    if getattr(delta, "tool_calls", None):
+                        did_tool_call = True
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_call_buffers:
+                                tool_call_buffers[idx] = {
+                                    "id": tc_delta.id or "",
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            buf = tool_call_buffers[idx]
+                            if tc_delta.id:
+                                buf["id"] = tc_delta.id
+                            if tc_delta.function and tc_delta.function.name:
+                                buf["name"] += tc_delta.function.name
+                            if tc_delta.function and tc_delta.function.arguments:
+                                buf["arguments"] += tc_delta.function.arguments
 
             except Exception as e:
-                print(f"Lỗi khi gọi LLM decision: {e}")
+                yield {"step": "answer", "status": "error", "data": {"error": str(e)}}
+                return
+
+            # Nếu vòng này LLM không gọi tool -> đã trả lời xong, thoát loop
+            if not did_tool_call:
                 break
 
-        yield {"step": "tool_call", "status": "done", "data": None}
+            # ---- Xử lý các tool call đã gom được ----
+            assistant_tool_calls = []
+            for idx in sorted(tool_call_buffers.keys()):
+                buf = tool_call_buffers[idx]
+                assistant_tool_calls.append({
+                    "id": buf["id"],
+                    "type": "function",
+                    "function": {
+                        "name": buf["name"],
+                        "arguments": buf["arguments"],
+                    },
+                })
 
-        # ==========================================
-        # BƯỚC 4: GENERATE FINAL ANSWER (Streaming)
-        # ==========================================
-        yield {"step": "answer", "status": "start", "data": None}
+            # Thêm assistant message chứa tool_calls vào history (bắt buộc theo chuẩn OpenAI)
+            llm_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": assistant_tool_calls,
+            })
 
-        # Format lại context cuối cùng (bao gồm cả doc tìm được từ tool nếu có)
-        final_context_text = self._format_context(final_context_docs)
-        
-        # Tạo map citation: {"1": doc_obj_1, "2": doc_obj_2}
-        # Key là string index để khớp với format [1], [2] trong text
-        citation_map = {str(i+1): d for i, d in enumerate(final_context_docs)}
+            for tc in assistant_tool_calls:
+                if tc["function"]["name"] != "search_referenced_document":
+                    # tool lạ, bỏ qua an toàn
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": "Tool không được hỗ trợ.",
+                    })
+                    continue
 
-        final_prompt = f"""Dựa trên ngữ cảnh sau:
-{final_context_text}
+                try:
+                    args = json.loads(tc["function"]["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
 
-Câu hỏi: {question}
+                yield {"step": "tool_call", "status": "detected", "data": {"args": args}}
 
-Hãy trả lời câu hỏi trên. 
-QUY TẮC TRÍCH DẪN BẮT BUỘC:
-- Mọi thông tin lấy từ ngữ cảnh đều phải trích dẫn nguồn.
-- Sử dụng CHÍNH XÁC định dạng [N] (ví dụ: [1], [2], [3]). 
-- KHÔNG thêm khoảng trắng (không dùng [ 1 ]), KHÔNG dùng định dạng khác.
-- Đặt mã trích dẫn ở cuối câu hoặc cuối ý tương ứng.
-- Nếu không tìm thấy thông tin trong ngữ cảnh, hãy nói rõ là không có thông tin. /no_think
-"""
+                try:
+                    extra_docs = self.search_service.doc_ref_search(
+                        query=args.get("content_query", question),
+                        doc_ref=args.get("doc_ref"),
+                        article_filter=args.get("dieu_filter"),
+                        clause_filter=args.get("khoan_filter"),
+                        top_k=15,
+                    )
+                except Exception as e:
+                    print(f"Lỗi thực thi tool: {e}")
+                    extra_docs = []
+                    yield {"step": "tool_call", "status": "error", "data": {"error": str(e)}}
 
-        # Reset messages cho lần trả lời cuối cùng để tránh nhiễu từ quá trình decision
-        # Hoặc giữ nguyên history nếu muốn model nhớ bối cảnh trước đó. 
-        # Ở đây ta dùng prompt mới hoàn toàn để đảm bảo tập trung vào context cuối cùng.
-        final_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": final_prompt}
-        ]
-        
-        full_answer = ""
-        
-        try:
-            # Gọi LLM lần cuối để sinh câu trả lời (Có Stream)
-            for chunk in self.chat_service.generate_response(final_messages, stream=stream):
-                if stream:
-                    delta = ""
-                    # Xử lý nhiều định dạng response khác nhau từ OpenAI client
-                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                        delta = chunk.choices[0].delta.content or ""
-                    elif hasattr(chunk, 'content'):
-                        delta = chunk.content or ""
-                    elif isinstance(chunk, dict):
-                        delta = chunk.get('content', '') or chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')
-                    
-                    if delta:
-                        full_answer += delta
-                        yield {
-                            "step": "answer", 
-                            "status": "streaming", 
-                            "data": {
-                                "chunk": delta,
-                                # Gửi citation_map để frontend có thể highlight nếu cần
-                                # Lưu ý: gửi toàn bộ map mỗi lần có thể nặng, tùy frontend xử lý
-                                "citations": citation_map 
-                            }
-                        }
+                if extra_docs:
+                    context_docs = self._deduplicate_docs(context_docs + extra_docs)[:self.MAX_CONTEXT_CHUNKS]
+                    citation_map = {str(i + 1): d for i, d in enumerate(context_docs)}
+                    yield {"step": "tool_call", "status": "executed", "data": {"found_count": len(extra_docs)}}
+                    tool_result_content = (
+                        f"Đã tìm thấy {len(extra_docs)} đoạn trích từ văn bản {args.get('doc_ref')}. "
+                        f"Ngữ cảnh đầy đủ đã được cập nhật ở lượt tiếp theo."
+                    )
                 else:
-                    # Non-stream mode
-                    if hasattr(chunk, 'content'):
-                        full_answer = chunk.content
-                    elif isinstance(chunk, dict):
-                        full_answer = chunk.get('content', '')
-                    else:
-                        full_answer = str(chunk)
-            
-            yield {
-                "step": "answer", 
-                "status": "done", 
-                "data": {
-                    "text": full_answer,
-                    "citations": citation_map,
-                    "sources": final_context_docs # Gửi full source để debug hoặc hiển thị chi tiết
-                }
-            }
-            
-        except Exception as e:
-            yield {
-                "step": "answer", 
-                "status": "error", 
-                "data": {"error": str(e)}
-            }
+                    yield {"step": "tool_call", "status": "executed", "data": {"found_count": 0, "message": "Không tìm thấy thông tin"}}
+                    tool_result_content = f"Không tìm thấy thông tin bổ sung trong văn bản {args.get('doc_ref')}."
+
+                llm_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_result_content,
+                })
+
+            # Cập nhật lại phần "ngữ cảnh" cho lượt gọi tiếp theo bằng cách
+            # thêm 1 user message mới chứa context đã bổ sung, để model
+            # thực sự "nhìn thấy" nội dung mới lấy được (không chỉ là message
+            # thông báo suông ở trên).
+            llm_messages.append({
+                "role": "user",
+                "content": (
+                    f"Đây là ngữ cảnh đầy đủ đã được cập nhật sau khi tra cứu thêm:\n\n"
+                    f"{self._format_context(context_docs)}\n\n"
+                    f"Hãy trả lời câu hỏi gốc: {question}\n"
+                    f"Nhớ tuân thủ quy tắc trích dẫn [N] như đã nêu. Nếu vẫn còn thiếu thông tin quan trọng "
+                    f"và cần tra cứu thêm văn bản khác, hãy tiếp tục gọi tool."
+                ),
+            })
+
+            yield {"step": "tool_call", "status": "done", "data": None}
+            # loop tiếp -> gọi lại LLM với context mới
+
+        yield {
+            "step": "answer",
+            "status": "done",
+            "data": {
+                "text": full_answer,
+                "citations": citation_map,
+                "sources": context_docs,
+            },
+        }
