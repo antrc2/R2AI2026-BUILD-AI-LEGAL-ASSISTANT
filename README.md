@@ -1,8 +1,9 @@
+
+
 # RAG Chatbot API - Hỏi đáp Pháp luật Việt Nam
 
 ## Demo
-https://github.com/user-attachments/assets/ebe2d6a9-bf41-427c-83c1-a3005e9f8534
-
+https://github.com/user-attachments/assets/dccc32c0-e9b4-414a-aecb-b64a7bd6383b
 
 ## Giới thiệu
 
