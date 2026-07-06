@@ -1,485 +1,628 @@
-<!DOCTYPE html>
-<html lang="vi">
-
-<head>
+<html lang="vi"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Legal RAG Chatbot</title>
+    <title>Legal AI Assistant | Trợ Lý Pháp Lý</title>
+    
+    <!-- Fonts & Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Merriweather:ital,wght@0,300;0,400;0,700;1,400&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Markdown & Highlight -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+
     <style>
+        :root {
+            --primary: #1e3a8a;       /* Xanh navy pháp lý */
+            --primary-light: #eff6ff;
+            --accent: #d97706;        /* Vàng đồng nhấn mạnh citation */
+            --bg-app: #f8fafc;
+            --bg-sidebar: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --msg-user: #1e3a8a;
+            --msg-bot: #ffffff;
+            --error: #dc2626;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
         body {
-            font-family: 'Segoe UI', sans-serif;
-            background: #f4f4f9;
-            margin: 0;
-            display: flex;
-            justify-content: center;
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-app);
+            color: var(--text-main);
             height: 100vh;
+            display: flex;
+            overflow: hidden;
         }
 
-        .container {
-            width: 100%;
-            max-width: 900px;
-            background: white;
+        /* --- SIDEBAR TÀI LIỆU THAM KHẢO --- */
+        .doc-sidebar {
+            width: 380px;
+            background: var(--bg-sidebar);
+            border-left: 1px solid var(--border);
             display: flex;
             flex-direction: column;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+            z-index: 20;
         }
 
-        .header {
+        .sidebar-header {
             padding: 20px;
-            background: #2c3e50;
-            color: white;
-            text-align: center;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            color: var(--primary);
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 10px;
         }
 
-        .header h2 { margin: 0; flex: 1; }
-
-        .header-btn {
-            background: transparent;
-            border: 1px solid rgba(255,255,255,0.5);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.85em;
-        }
-
-        .header-btn:hover { background: rgba(255,255,255,0.15); }
-
-        .chat-box {
+        .doc-list {
             flex: 1;
-            padding: 20px;
             overflow-y: auto;
+            padding: 15px;
+        }
+
+        .doc-card {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .doc-card:hover, .doc-card.active {
+            border-color: var(--primary);
+            box-shadow: var(--shadow-md);
+            background: var(--primary-light);
+        }
+
+        .doc-card .doc-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: var(--text-main);
+        }
+
+        .doc-card .doc-snippet {
+            font-family: 'Merriweather', serif;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+            max-height: 60px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .doc-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--primary);
+            color: white;
+            margin-bottom: 8px;
+        }
+
+        /* --- MAIN CHAT AREA --- */
+        .main-area {
+            flex: 1;
             display: flex;
             flex-direction: column;
+            min-width: 0;
+        }
+
+        .top-bar {
+            height: 64px;
+            background: white;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 30px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: var(--primary);
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px 10%;
+            scroll-behavior: smooth;
+        }
+
+        /* Message Styling */
+        .message-row {
+            display: flex;
+            margin-bottom: 24px;
             gap: 15px;
         }
 
-        .input-area {
-            padding: 20px;
-            border-top: 1px solid #ddd;
+        .message-row.user { justify-content: flex-end; }
+        .message-row.bot { justify-content: flex-start; }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
             display: flex;
-            gap: 10px;
             align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            flex-shrink: 0;
         }
 
-        textarea[type="text"] {
-            flex: 1;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            outline: none;
-        }
+        .bot .avatar { background: var(--primary); color: white; }
+        .user .avatar { background: #cbd5e1; color: var(--text-main); }
 
-        button {
-            padding: 12px 20px;
-            background: #3498db;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background: #2980b9;
-        }
-
-        button:disabled {
-            background: #bdc3c7;
-            cursor: not-allowed;
-        }
-
-        .message {
-            max-width: 85%;
-            padding: 15px;
-            border-radius: 10px;
-            line-height: 1.5;
+        .bubble {
+            max-width: 75%;
+            padding: 16px 20px;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 0.95rem;
             position: relative;
         }
 
-        .user-msg {
-            align-self: flex-end;
-            background: #3498db;
+        .user .bubble {
+            background: var(--msg-user);
             color: white;
+            border-bottom-right-radius: 2px;
         }
 
-        .bot-msg {
-            align-self: flex-start;
-            background: #ecf0f1;
-            color: #333;
+        .bot .bubble {
+            background: var(--msg-bot);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 2px;
+            box-shadow: var(--shadow-sm);
         }
 
-        /* --- CSS cho Steps Log --- */
-        .steps-log-container {
-            font-size: 0.85em;
-            color: #7f8c8d;
-            margin-bottom: 15px;
-            border-left: 3px solid #bdc3c7;
-            padding-left: 10px;
+        /* Legal Content Typography inside Bot Bubble */
+        .bot .bubble h1, .bot .bubble h2, .bot .bubble h3 { 
+            color: var(--primary); margin-top: 16px; margin-bottom: 8px; font-size: 1.1em; 
         }
-
-        .step-log {
-            margin-bottom: 5px;
-            transition: all 0.3s ease;
-        }
-
-        .step-log.processing {
-            color: #2980b9;
+        .bot .bubble p { margin-bottom: 10px; }
+        .bot .bubble blockquote {
+            border-left: 3px solid var(--accent);
+            padding-left: 12px;
+            margin: 12px 0;
+            font-family: 'Merriweather', serif;
             font-style: italic;
+            color: #475569;
+            background: #fffbeb;
+            padding: 10px 15px;
+            border-radius: 0 6px 6px 0;
+        }
+        .bot .bubble code:not(pre code) {
+            background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #be185d;
+        }
+        .bot .bubble pre {
+            background: #1e293b; color: #f8fafc; padding: 15px; border-radius: 8px; overflow-x: auto; margin: 12px 0;
         }
 
-        .step-log.done {
-            color: #27ae60;
-            font-style: normal;
-        }
-
-        /* --- CSS cho Citation & Tooltip --- */
-        .citation {
-            color: #2980b9;
-            font-weight: bold;
+        /* Inline Citation Badge */
+        .cite-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px; height: 20px;
+            background: var(--accent);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            border-radius: 50%;
             cursor: pointer;
-            text-decoration: underline;
-            position: relative;
-            display: inline-block;
+            vertical-align: super;
+            margin: 0 2px;
+            transition: transform 0.2s;
+            text-decoration: none !important;
+        }
+        .cite-badge:hover { transform: scale(1.2); background: #b45309; }
+
+        /* --- Step Log (danh sách các bước, cộng dồn) --- */
+        .step-log-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding: 10px 14px;
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            width: fit-content;
+            max-width: 100%;
+            transition: opacity 0.3s ease;
         }
 
-        .tooltip {
-            visibility: hidden;
-            width: 500px;
-            background-color: #333;
-            color: #fff;
-            text-align: left;
-            border-radius: 6px;
-            padding: 10px;
-            position: absolute;
-            z-index: 10;
-            bottom: 125%;
-            left: 50%;
-            margin-left: -125px;
-            opacity: 0;
-            transition: opacity 0.3s;
-            font-size: 0.85em;
-            pointer-events: none;
+        .step-log-wrap.collapsed {
+            opacity: 0.55;
         }
 
-        .citation:hover .tooltip {
-            visibility: visible;
-            opacity: 1;
+        .step-line {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.4;
         }
 
-        .references {
-            margin-top: 15px;
-            padding-top: 10px;
-            border-top: 1px solid #ccc;
-            font-size: 0.85em;
-        }
-        
-        .references ul {
-            padding-left: 20px;
-            margin: 5px 0;
+        .step-line i { color: var(--primary); margin-top: 2px; flex-shrink: 0; }
+        .step-line.active i { animation: spin 1s linear infinite; }
+        .step-line.done { color: var(--text-muted); }
+        .step-line.done i { color: #16a34a; }
+        .step-line.error { color: var(--error); }
+        .step-line.error i { color: var(--error); }
+        .step-line b { color: var(--text-main); font-weight: 600; }
+        .step-line i.detail { color: var(--text-muted); font-style: italic; }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Input Area */
+        .input-wrapper {
+            padding: 20px 10%;
+            background: white;
+            border-top: 1px solid var(--border);
         }
 
-        .references li {
-            margin-bottom: 4px;
-            color: #555;
+        .input-box {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            background: var(--bg-app);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 8px 8px 8px 16px;
+            transition: border-color 0.2s;
         }
 
-        .toggle-container {
+        .input-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(30,58,138,0.1); }
+
+        textarea {
+            flex: 1;
+            border: none;
+            background: transparent;
+            resize: none;
+            outline: none;
+            padding: 10px 0;
+            max-height: 150px;
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+
+        .send-btn {
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            border: none;
+            background: var(--primary);
+            color: white;
+            cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 5px;
-            font-size: 0.9em;
-            color: #555;
+            justify-content: center;
+            transition: background 0.2s;
         }
+        .send-btn:hover { background: #1e40af; }
+        .send-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
 
-        /* Markdown styling */
-        .bot-msg h1, .bot-msg h2, .bot-msg h3 { margin-top: 16px; margin-bottom: 10px; }
-        .bot-msg p { margin: 8px 0; }
-        .bot-msg ul, .bot-msg ol { padding-left: 22px; margin: 10px 0; }
-        .bot-msg li { margin: 4px 0; }
-        .bot-msg pre { background: #1e1e1e; color: #fff; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
-        .bot-msg code:not(pre code) { background: #ececec; padding: 2px 5px; border-radius: 4px; font-size: 0.95em; }
-        .bot-msg table { border-collapse: collapse; margin: 12px 0; width: 100%; }
-        .bot-msg th, .bot-msg td { border: 1px solid #ddd; padding: 8px; }
-        .bot-msg th { background: #f5f5f5; }
-        .bot-msg blockquote { border-left: 4px solid #3498db; margin: 10px 0; padding-left: 12px; color: #555; }
+        /* Responsive */
+        @media (max-width: 900px) {
+            .doc-sidebar { display: none; } /* Có thể thêm toggle button nếu cần */
+            .chat-container, .input-wrapper { padding: 20px 5%; }
+        }
     </style>
 </head>
+<body data-new-gr-c-s-check-loaded="14.1308.0" data-gr-ext-installed="">
 
-<body>
-    <div class="container">
-        <div class="header">
-            <h2>Trợ Lý Pháp Lý AI</h2>
-            <button class="header-btn" onclick="resetConversation()">Cuộc trò chuyện mới</button>
-        </div>
-        <div class="chat-box" id="chatBox"></div>
-        <div class="input-area">
-            <div class="toggle-container">
-                <label for="streamToggle">Stream:</label>
-                <input type="checkbox" id="streamToggle" checked>
+    <!-- MAIN CHAT -->
+    <div class="main-area">
+        <div class="top-bar">
+            <div class="brand">
+                <i class="fa-solid fa-scale-balanced"></i>
+                Legal AI Assistant
             </div>
-                <textarea  type="text" id="userInput" placeholder="Nhập câu hỏi pháp lý..."
-                onkeypress="if(event.key==='Enter') sendMessage()"></textarea>
-            <button onclick="sendMessage()" id="sendBtn">Gửi</button>
+            <button onclick="resetConversation()" style="background:none;border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;color:var(--text-muted);font-size:0.85rem;">
+                <i class="fa-solid fa-rotate-right"></i> Cuộc trò chuyện mới
+            </button>
+        </div>
+
+        <div class="chat-container" id="chatBox">
+            <!-- Welcome Message -->
+            <div class="message-row bot">
+                <div class="avatar"><i class="fa-solid fa-gavel"></i></div>
+                <div class="bubble">
+                    Xin chào! Tôi là trợ lý AI chuyên về văn bản pháp luật Việt Nam. Hãy đặt câu hỏi, tôi sẽ tra cứu và trích dẫn nguồn chính xác cho bạn.
+                </div>
+            </div>
+        </div>
+
+        <div class="input-wrapper">
+            <div class="input-box">
+                <textarea id="userInput" rows="1" placeholder="Đặt câu hỏi pháp lý (VD: Quy định về thời gian làm việc thêm giờ...)"></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                    <i class="fa-solid fa-paper-plane"></i>
+                </button>
+            </div>
         </div>
     </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 
-    <script>
-        marked.setOptions({ breaks: true, gfm: true });
+    <!-- SIDEBAR TÀI LIỆU -->
+    <div class="doc-sidebar">
+        <div class="sidebar-header">
+            <i class="fa-solid fa-book-open"></i> Tài liệu tham khảo
+        </div>
+        <div class="doc-list" id="docList">
+            <div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:0.9rem;">
+                <i class="fa-solid fa-magnifying-glass" style="font-size:2rem;margin-bottom:15px;opacity:0.3;"></i><br>
+                Các văn bản liên quan sẽ xuất hiện tại đây khi bạn đặt câu hỏi.
+            </div>
+        </div>
+    </div>
 
-        const chatBox = document.getElementById('chatBox');
-        const userInput = document.getElementById('userInput');
-        const sendBtn = document.getElementById('sendBtn');
-        const streamToggle = document.getElementById('streamToggle');
+<script>
+    marked.setOptions({ breaks: true, gfm: true });
 
-        // --- Lịch sử hội thoại (gửi lên backend mỗi lần chat) ---
-        // Chỉ chứa { role: 'user'|'assistant', content: string }, không lưu steps/citations.
-        let conversationHistory = [];
+    const chatBox = document.getElementById('chatBox');
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const docList = document.getElementById('docList');
+    let conversationHistory = [];
 
-        function resetConversation() {
-            conversationHistory = [];
-            chatBox.innerHTML = "";
+    // Auto-resize textarea
+    userInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+    });
+
+    userInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    function resetConversation() {
+        conversationHistory = [];
+        chatBox.innerHTML = `
+            <div class="message-row bot">
+                <div class="avatar"><i class="fa-solid fa-gavel"></i></div>
+                <div class="bubble">Xin chào! Tôi là trợ lý AI chuyên về văn bản pháp luật Việt Nam. Hãy đặt câu hỏi, tôi sẽ tra cứu và trích dẫn nguồn chính xác cho bạn.</div>
+            </div>`;
+        docList.innerHTML = `<div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:0.9rem;">
+            <i class="fa-solid fa-magnifying-glass" style="font-size:2rem;margin-bottom:15px;opacity:0.3;"></i><br>
+            Các văn bản liên quan sẽ xuất hiện tại đây khi bạn đặt câu hỏi.</div>`;
+        userInput.focus();
+    }
+
+    function updateSidebar(citations) {
+        if (!citations || Object.keys(citations).length === 0) return;
+        
+        docList.innerHTML = '';
+        Object.entries(citations).forEach(([key, src]) => {
+            const meta = src.metadata || {};
+            const title = meta.title || meta.doc_num || 'Văn bản không xác định';
+            const article = meta.article || meta.khoan || '';
+            const snippet = src.content ? src.content : '';
+            
+            const card = document.createElement('div');
+            card.className = 'doc-card';
+            card.id = `doc-ref-${key}`;
+            card.innerHTML = `
+                <span class="doc-badge">[${key}]</span>
+                <div class="doc-title">${title} ${article ? '- ' + article : ''}</div>
+                <div class="doc-snippet">${snippet}</div>
+            `;
+            docList.appendChild(card);
+        });
+    }
+
+    function parseCitations(text, citations) {
+        return text.replace(/\[(\d+)\]/g, (match, num) => {
+            if (!citations[num]) return match;
+            return `<a class="cite-badge" href="#doc-ref-${num}" onclick="document.getElementById('doc-ref-${num}')?.scrollIntoView({behavior:'smooth',block:'center'})">${num}</a>`;
+        });
+    }
+
+    async function sendMessage() {
+        const question = userInput.value.trim();
+        if (!question) return;
+
+        // Render user message
+        appendUserMessage(question);
+        conversationHistory.push({ role: 'user', content: question });
+        
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        sendBtn.disabled = true;
+
+        // Tạo khung tin nhắn bot: step log (cộng dồn) + bubble câu trả lời
+        const botRow = document.createElement('div');
+        botRow.className = 'message-row bot';
+        botRow.innerHTML = `
+            <div class="avatar"><i class="fa-solid fa-gavel"></i></div>
+            <div style="max-width:100%;">
+                <div class="step-log-wrap" id="stepLog"></div>
+                <div class="bubble" id="streamingBubble" style="display:none;"></div>
+            </div>
+        `;
+        chatBox.appendChild(botRow);
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        const stepLogEl = botRow.querySelector('#stepLog');
+        const bubbleEl = botRow.querySelector('#streamingBubble');
+        let fullText = "";
+        let citationsData = {};
+
+        // MỌI bước đều được APPEND thành 1 dòng MỚI trong nhật ký — không
+        // ghi đè lên dòng trước đó. Nếu có nhiều vòng lặp tool-call, mỗi lần
+        // "detected" / "executed" / "skipped" đều tạo dòng riêng, để người
+        // dùng xem lại được toàn bộ quá trình xử lý từ đầu đến cuối.
+        function addStepLine(iconClass, html, state) {
+            const line = document.createElement('div');
+            line.className = `step-line ${state}`;
+            line.innerHTML = `<i class="${iconClass}"></i> <span>${html}</span>`;
+            stepLogEl.appendChild(line);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function handleStep(data) {
+            const step = data.step;
+            const status = data.status;
+            const d = data.data || {};
+
+            if (step === 'sub_queries') {
+                if (status === 'processing') {
+                    addStepLine('fa-solid fa-circle-notch', 'Đang phân tích câu hỏi...', 'active');
+                } else if (status === 'done') {
+                    addStepLine('fa-solid fa-list-check',
+                        `Đã phân tách thành ${d.queries.length} truy vấn: <i class="detail">${d.queries.join(', ')}</i>`, 'done');
+                }
+            } else if (step === 'retrieval') {
+                if (status === 'processing') {
+                    addStepLine('fa-solid fa-circle-notch', 'Đang tìm kiếm trong cơ sở dữ liệu VBPL...', 'active');
+                } else if (status === 'done') {
+                    addStepLine('fa-solid fa-file-contract', `Tìm thấy ${d.count} đoạn trích liên quan`, 'done');
+                }
+            } else if (step === 'context_ready') {
+                // Ngữ cảnh (citations/sources) đã sẵn sàng, cập nhật sidebar
+                // ngay lập tức, TRƯỚC khi LLM bắt đầu sinh câu trả lời.
+                if (d.citations) {
+                    citationsData = d.citations;
+                    updateSidebar(citationsData);
+                }
+                addStepLine('fa-solid fa-folder-open',
+                    `Đã chuẩn bị ${d.sources ? d.sources.length : Object.keys(d.citations || {}).length} nguồn tài liệu tham khảo`, 'done');
+            } else if (step === 'tool_call') {
+                if (status === 'processing') {
+                    addStepLine('fa-solid fa-circle-notch', 'Đang kiểm tra ngữ cảnh...', 'active');
+                } else if (status === 'detected') {
+                    const args = d.args || {};
+                    addStepLine('fa-solid fa-book',
+                        `Đang tra cứu văn bản: <b>${args.doc_ref || ''}</b> ${args.content_query ? `(<i class="detail">${args.content_query}</i>)` : ''}...`, 'active');
+                } else if (status === 'executed') {
+                    addStepLine('fa-solid fa-book-open',
+                        `Tìm thấy thêm ${d.found_count} đoạn trích từ văn bản được trích dẫn`, 'done');
+                } else if (status === 'skipped') {
+                    addStepLine('fa-solid fa-circle-check', 'Đủ thông tin, không cần tra cứu thêm', 'done');
+                } else if (status === 'error') {
+                    addStepLine('fa-solid fa-triangle-exclamation', `Lỗi tra cứu: ${d.error || 'Không xác định'}`, 'error');
+                } else if (status === 'done') {
+                    addStepLine('fa-solid fa-arrow-rotate-right', 'Đang gọi lại mô hình với ngữ cảnh mới...', 'done');
+                }
+            } else if (step === 'answer') {
+                if (status === 'start') {
+                    addStepLine('fa-solid fa-pen-nib', 'Đang tổng hợp câu trả lời...', 'active');
+                    bubbleEl.style.display = 'block';
+                } else if (status === 'error') {
+                    addStepLine('fa-solid fa-triangle-exclamation', `Lỗi: ${d.error || 'Không xác định'}`, 'error');
+                }
+            }
+
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        try {
+            // LUÔN SỬ DỤNG STREAMING
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: conversationHistory, stream: true })
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('data: ') || trimmed === 'data: [DONE]') continue;
+                    
+                    try {
+                        const data = JSON.parse(trimmed.slice(6));
+
+                        // Cập nhật step log cho mọi bước, trừ lúc answer đang stream chữ
+                        if (!(data.step === 'answer' && data.status === 'streaming')) {
+                            handleStep(data);
+                        }
+
+                        // Xử lý câu trả lời đang stream
+                        if (data.step === 'answer' && data.status === 'streaming') {
+                            fullText += data.data.chunk;
+                            if (data.data.citations) citationsData = data.data.citations;
+
+                            bubbleEl.style.display = 'block';
+                            const processed = parseCitations(fullText, citationsData);
+                            bubbleEl.innerHTML = marked.parse(processed);
+                            bubbleEl.querySelectorAll("pre code").forEach(el => hljs.highlightElement(el));
+                            chatBox.scrollTop = chatBox.scrollHeight;
+                        }
+
+                        // Xử lý khi câu trả lời hoàn tất
+                        if (data.step === 'answer' && data.status === 'done') {
+                            fullText = data.data.text;
+                            // citations lúc này đã được cập nhật từ (các) sự kiện
+                            // "context_ready" trước đó; vẫn merge thêm nếu backend
+                            // có gửi kèm để chắc chắn không bị thiếu.
+                            if (data.data.citations) citationsData = data.data.citations;
+                            const processed = parseCitations(fullText, citationsData);
+                            bubbleEl.innerHTML = marked.parse(processed);
+                            bubbleEl.querySelectorAll("pre code").forEach(el => hljs.highlightElement(el));
+
+                            updateSidebar(citationsData);
+                            addStepLine('fa-solid fa-circle-check', 'Hoàn tất câu trả lời', 'done');
+
+                            // Thu gọn (làm mờ) thay vì ẩn hẳn step log, để giữ lại
+                            // "nhật ký" các bước đã thực hiện cho câu trả lời này.
+                            stepLogEl.classList.add('collapsed');
+
+                            conversationHistory.push({ role: 'assistant', content: fullText });
+                        }
+                    } catch (e) { console.error("Parse error:", e); }
+                }
+            }
+        } catch (err) {
+            bubbleEl.style.display = 'block';
+            bubbleEl.innerHTML = `<span style="color:#dc2626"><i class="fa-solid fa-triangle-exclamation"></i> Lỗi kết nối: ${err.message}</span>`;
+        } finally {
+            sendBtn.disabled = false;
             userInput.focus();
         }
+    }
 
-        function renderMarkdown(text, sources) {
-            const withCitation = parseCitations(text, sources);
-            return marked.parse(withCitation);
-        }
+    function appendUserMessage(text) {
+        const row = document.createElement('div');
+        row.className = 'message-row user';
+        row.innerHTML = `
+            <div class="bubble"></div>
+            <div class="avatar"><i class="fa-solid fa-user"></i></div>
+        `;
+        row.querySelector('.bubble').textContent = text;
+        chatBox.appendChild(row);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+</script>
 
-        function parseCitations(text, sources) {
-            return text.replace(/\[(\d+)\]/g, (match, number) => {
-                const source = sources[number];
-                if (!source) return match;
-
-                const snippet = source.content ? source.content.substring(0, 1000) + '...' : 'Không có nội dung';
-                const meta = source.metadata || {};
-                const title = meta.title || meta.doc_num || 'Văn bản không tên';
-
-                return `<span class="citation">${match}<span class="tooltip"><strong>${title}</strong><br>${snippet}</span></span>`;
-            });
-        }
-
-        function appendMessage(role, text, isHtml = false) {
-            const div = document.createElement('div');
-            div.className = `message ${role === 'user' ? 'user-msg' : 'bot-msg'}`;
-            if (isHtml) div.innerHTML = text;
-            else div.textContent = text;
-            chatBox.appendChild(div);
-            chatBox.scrollTop = chatBox.scrollHeight;
-            return div;
-        }
-
-        async function sendMessage() {
-            const question = userInput.value.trim();
-            if (!question) return;
-
-            appendMessage('user', question);
-            conversationHistory.push({ role: 'user', content: question });
-
-            userInput.value = '';
-            sendBtn.disabled = true;
-
-            const useStream = streamToggle.checked;
-            
-            // Tạo cấu trúc DOM cho Bot Message
-            const botMsgDiv = document.createElement('div');
-            botMsgDiv.className = 'message bot-msg';
-            
-            const stepsContainer = document.createElement('div');
-            stepsContainer.className = 'steps-log-container';
-            botMsgDiv.appendChild(stepsContainer);
-            
-            const answerContainer = document.createElement('div');
-            answerContainer.className = 'answer-container';
-            botMsgDiv.appendChild(answerContainer);
-            
-            const refsContainer = document.createElement('div');
-            refsContainer.className = 'references';
-            botMsgDiv.appendChild(refsContainer);
-            
-            chatBox.appendChild(botMsgDiv);
-            chatBox.scrollTop = chatBox.scrollHeight;
-
-            let fullText = "";
-            let stepsHtml = "";
-            let citationsData = {};
-
-            // Hàm xử lý cập nhật Step Log
-            function handleStep(data) {
-                const step = data.step;
-                const status = data.status;
-                const d = data.data || {};
-
-                if (step === 'sub_queries') {
-                    if (status === 'processing') {
-                        stepsHtml += `<div class="step-log processing">🔍 Đang phân tích câu hỏi...</div>`;
-                    } else if (status === 'done') {
-                        stepsHtml += `<div class="step-log done">🔍 Đã phân tích thành ${d.queries.length} ý: <i>${d.queries.join(', ')}</i></div>`;
-                    }
-                } else if (step === 'retrieval') {
-                    if (status === 'processing') {
-                        stepsHtml += `<div class="step-log processing">📚 Đang tìm kiếm tài liệu...</div>`;
-                    } else if (status === 'done') {
-                        stepsHtml += `<div class="step-log done">📚 Tìm thấy ${d.count} đoạn trích liên quan.</div>`;
-                    }
-                } else if (step === 'tool_call') {
-                    if (status === 'processing') {
-                        stepsHtml += `<div class="step-log processing">🛠️ Đang kiểm tra ngữ cảnh...</div>`;
-                    } else if (status === 'detected') {
-                        stepsHtml += `<div class="step-log done">🛠️ Đang tra cứu văn bản: <b>${d.args.doc_ref}</b> (Nội dung: <i>${d.args.content_query}</i>)...</div>`;
-                    } else if (status === 'executed') {
-                        stepsHtml += `<div class="step-log done">🛠️ Tìm thấy thêm ${d.found_count} đoạn trích từ văn bản được trích dẫn.</div>`;
-                    } else if (status === 'skipped') {
-                        stepsHtml += `<div class="step-log done">✅ Đủ thông tin, không cần tra cứu thêm.</div>`;
-                    }
-                } else if (step === 'answer') {
-                    if (status === 'start') {
-                        stepsHtml += `<div class="step-log done">✍️ Đang tổng hợp câu trả lời...</div>`;
-                    } else if (status === 'error') {
-                        stepsHtml += `<div class="step-log done" style="color:#c0392b">❌ Lỗi: ${d.error || 'Không xác định'}</div>`;
-                    }
-                }
-                
-                stepsContainer.innerHTML = stepsHtml;
-                chatBox.scrollTop = chatBox.scrollHeight;
-            }
-
-            // Hàm xử lý dữ liệu stream trả về
-            function processStreamData(data) {
-                // 1. Cập nhật Step Log (nếu không phải là answer streaming)
-                if (data.step !== 'answer' || data.status !== 'streaming') {
-                    handleStep(data);
-                }
-
-                // 2. Xử lý Answer Streaming
-                if (data.step === 'answer' && data.status === 'streaming') {
-                    fullText += data.data.chunk;
-                    if (data.data.citations) citationsData = data.data.citations;
-                    
-                    const renderedHtml = renderMarkdown(fullText, citationsData);
-                    answerContainer.innerHTML = renderedHtml;
-                    
-                    answerContainer.querySelectorAll("pre code").forEach((el) => {
-                        hljs.highlightElement(el);
-                    });
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                }
-                
-                // 3. Xử lý Answer Done (Hoàn tất)
-                if (data.step === 'answer' && data.status === 'done') {
-                    fullText = data.data.text;
-                    citationsData = data.data.citations;
-                    const renderedHtml = renderMarkdown(fullText, citationsData);
-                    answerContainer.innerHTML = renderedHtml;
-                    
-                    
-                    refsContainer.innerHTML = refsHtml;
-                    
-                    answerContainer.querySelectorAll("pre code").forEach((el) => {
-                        hljs.highlightElement(el);
-                    });
-
-                    // Lưu câu trả lời của bot vào lịch sử hội thoại để lượt sau gửi lên backend
-                    conversationHistory.push({ role: 'assistant', content: fullText });
-                }
-            }
-
-            try {
-                if (useStream) {
-                    const response = await fetch('/chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ messages: conversationHistory, stream: true })
-                    });
-
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-                    let buffer = ""; // Buffer để xử lý chunk bị cắt đôi
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        buffer += decoder.decode(value, { stream: true });
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop() || ""; // Giữ lại dòng chưa hoàn chỉnh vào buffer
-
-                        for (const line of lines) {
-                            const trimmedLine = line.trim();
-                            if (trimmedLine.startsWith('data: ') && trimmedLine !== 'data: [DONE]') {
-                                try {
-                                    const data = JSON.parse(trimmedLine.slice(6));
-                                    processStreamData(data);
-                                } catch (e) { 
-                                    console.error("JSON parse error:", e, "Line:", trimmedLine); 
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Xử lý phần buffer còn sót lại ở cuối
-                    if (buffer.trim().startsWith('data: ') && buffer.trim() !== 'data: [DONE]') {
-                        try {
-                            const data = JSON.parse(buffer.trim().slice(6));
-                            processStreamData(data);
-                        } catch (e) {}
-                    }
-
-                } else {
-                    // Non-stream
-                    const response = await fetch('/chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ messages: conversationHistory, stream: false })
-                    });
-                    const data = await response.json();
-
-                    if (data.steps) {
-                        for (const stepData of data.steps) {
-                            handleStep(stepData);
-                        }
-                    }
-
-                    if (data.final_answer) {
-                        fullText = data.final_answer;
-                        citationsData = data.citations || {};
-                        
-                        const renderedHtml = renderMarkdown(fullText, citationsData);
-                        answerContainer.innerHTML = renderedHtml;
-                        
-                        let refsHtml = '<strong>Tài liệu tham khảo:</strong><ul>';
-                        Object.keys(citationsData).forEach((key) => {
-                            const src = citationsData[key];
-                            const m = src.metadata || {};
-                            const title = m.title || m.doc_num || 'Văn bản không tên';
-                            const article = m.article || m.khoan || '';
-                            refsHtml += `<li>[${key}] ${title} ${article ? '- ' + article : ''}</li>`;
-                        });
-                        refsHtml += '</ul>';
-                        refsContainer.innerHTML = refsHtml;
-                        
-                        answerContainer.querySelectorAll("pre code").forEach((el) => {
-                            hljs.highlightElement(el);
-                        });
-
-                        // Lưu câu trả lời của bot vào lịch sử hội thoại
-                        conversationHistory.push({ role: 'assistant', content: fullText });
-                    }
-                }
-            } catch (err) {
-                answerContainer.innerHTML += `<br><span style="color:red">Lỗi: ${err.message}</span>`;
-            } finally {
-                sendBtn.disabled = false;
-                userInput.focus();
-            }
-        }
-    </script>
-</body>
-</html>
+</body></html>

@@ -117,6 +117,21 @@ class RAGPipeline:
                 return m.get("content", "")
         return ""
 
+    def _with_no_think(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Trả về bản sao của messages, với '/no_think' được thêm vào cuối
+        content của MỌI message role='user' (để tắt chế độ thinking trong
+        LM Studio). Không sửa message gốc (tránh side-effect ngoài ý muốn),
+        và không đụng vào system/assistant/tool messages."""
+        result = []
+        for m in messages:
+            if m.get("role") == "user" and m.get("content"):
+                content = m["content"]
+                if not content.rstrip().endswith("/no_think"):
+                    content = f"{content} /no_think"
+                m = {**m, "content": content}
+            result.append(m)
+        return result
+
     def _build_context_message(self, context_docs: List[Dict]) -> Dict[str, str]:
         """Tạo 1 system/user message chứa ngữ cảnh + quy tắc trích dẫn,
         được chèn vào NGAY TRƯỚC lượt hội thoại của user để LLM luôn thấy
@@ -167,19 +182,29 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
 
         sub_query_prompt = (
             f"Hãy phân tích đoạn hội thoại sau, tập trung vào ý định mới nhất của người dùng, "
-            f"và tách thành các ý nhỏ (sub-queries) độc lập để tìm kiếm thông tin hiệu quả hơn. "
+            f"và tách câu hỏi thành các sub-queries để tìm kiếm thông tin hiệu quả hơn.\n\n"
+            f"QUY TẮC BẮT BUỘC:\n"
+            f"- Mỗi sub-query PHẢI là một câu hỏi ĐẦY ĐỦ NGỮ CẢNH, có thể hiểu được "
+            f"độc lập mà không cần đọc các sub-query khác. TUYỆT ĐỐI KHÔNG được lược bỏ "
+            f"chủ thể/điều kiện chung của câu hỏi gốc (vd: đối tượng áp dụng, loại hợp đồng, "
+            f"trình độ chuyên môn, mốc thời gian...) khi tách ý.\n"
+            f"- Nếu câu hỏi gốc chỉ có MỘT ý chính, hoặc các ý nhỏ gắn chặt với nhau và không thể "
+            f"tách rời mà vẫn giữ đủ nghĩa, hãy trả về DUY NHẤT 1 sub-query giống với câu hỏi gốc "
+            f"(diễn đạt lại rõ ràng hơn nếu cần) thay vì cố tách ra nhiều ý.\n"
+            f"- Chỉ tách thành nhiều sub-query khi các ý thực sự có thể tìm kiếm ĐỘC LẬP mà không "
+            f"mất nghĩa (vd: hai chủ đề pháp lý khác nhau, không chia sẻ chung điều kiện/chủ thể).\n\n"
             f"Trả về kết quả dưới dạng JSON thuần túy với key 'queries'.\n\n"
-            f"--- Hội thoại ---\n{conversation_text} /no_think"
+            f"--- Hội thoại ---\n{conversation_text}"
         )
 
         try:
             sub_query_response = ""
             # stream=False -> ChatService yield đúng 1 lần: response.choices[0].message
             for message in self.chat_service.generate_response(
-                [
+                self._with_no_think([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": sub_query_prompt},
-                ],
+                ]),
                 response_format=SUB_QUERY_SCHEMA,
                 stream=False,
             ):
@@ -202,7 +227,7 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
         retrieved_docs = []
         for sq in sub_queries:
             try:
-                docs = self.search_service.semantic_search(query=sq, top_k=15)
+                docs = self.search_service.semantic_search(query=sq, top_k=10)
                 retrieved_docs.extend(docs)
             except Exception as e:
                 print(f"Lỗi search cho query '{sq}': {e}")
@@ -214,6 +239,30 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
             "step": "retrieval",
             "status": "done",
             "data": {"count": len(context_docs)},
+        }
+        citation_map: Dict[str, Any] = {str(i + 1): d for i, d in enumerate(context_docs)}
+
+        # ==========================================
+        # BƯỚC 2.5: CONTEXT READY
+        # ------------------------------------------
+        # Trả ra citations/sources NGAY khi vừa retrieval xong, TRƯỚC khi
+        # LLM bắt đầu trả lời — để sidebar tài liệu tham khảo hiện lên sớm
+        # cho người dùng xem trong lúc chờ LLM sinh câu trả lời.
+        #
+        # QUAN TRỌNG: KHÔNG dùng step="answer", status="done" ở đây, vì đó
+        # là tín hiệu "câu trả lời đã hoàn tất" thật sự ở cuối luồng — nếu
+        # dùng trùng, frontend sẽ tưởng câu trả lời xong ngay từ đầu (trong
+        # khi "text" chưa tồn tại) và có thể tắt luôn UI streaming.
+        # Dùng step riêng "context_ready" để frontend cập nhật sidebar mà
+        # không đụng vào logic xử lý "answer".
+        # ==========================================
+        yield {
+            "step": "context_ready",
+            "status": "done",
+            "data": {
+                "citations": citation_map,
+                "sources": context_docs,
+            },
         }
 
         # ==========================================================
@@ -230,7 +279,6 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
         ]
 
         full_answer = ""
-        citation_map: Dict[str, Any] = {str(i + 1): d for i, d in enumerate(context_docs)}
 
         for iteration in range(self.MAX_TOOL_ITERATIONS):
             did_tool_call = False
@@ -242,7 +290,7 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
 
             try:
                 response_stream = self.chat_service.generate_response(
-                    llm_messages,
+                    self._with_no_think(llm_messages),
                     tools=SEARCH_TOOLS,
                     stream=True,
                 )
@@ -347,7 +395,7 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
                         doc_ref=args.get("doc_ref"),
                         article_filter=args.get("dieu_filter"),
                         clause_filter=args.get("khoan_filter"),
-                        top_k=15,
+                        top_k=5,
                     )
                 except Exception as e:
                     print(f"Lỗi thực thi tool: {e}")
@@ -358,6 +406,18 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
                     context_docs = self._deduplicate_docs(context_docs + extra_docs)[:self.MAX_CONTEXT_CHUNKS]
                     citation_map = {str(i + 1): d for i, d in enumerate(context_docs)}
                     yield {"step": "tool_call", "status": "executed", "data": {"found_count": len(extra_docs)}}
+
+                    # Context vừa được bổ sung -> phát lại "context_ready" để
+                    # frontend cập nhật sidebar với danh sách tài liệu mới nhất.
+                    yield {
+                        "step": "context_ready",
+                        "status": "done",
+                        "data": {
+                            "citations": citation_map,
+                            "sources": context_docs,
+                        },
+                    }
+
                     tool_result_content = (
                         f"Đã tìm thấy {len(extra_docs)} đoạn trích từ văn bản {args.get('doc_ref')}. "
                         f"Ngữ cảnh đầy đủ đã được cập nhật ở lượt tiếp theo."
@@ -390,12 +450,14 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
             yield {"step": "tool_call", "status": "done", "data": None}
             # loop tiếp -> gọi lại LLM với context mới
 
+        # ==========================================
+        # KẾT THÚC: phát tín hiệu answer/done thật sự
+        # ==========================================
         yield {
             "step": "answer",
             "status": "done",
             "data": {
                 "text": full_answer,
                 "citations": citation_map,
-                "sources": context_docs,
             },
         }
