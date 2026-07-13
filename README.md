@@ -55,7 +55,160 @@ project/
 └── README.md                   # Tài liệu này
 ```
 
-> Điều chỉnh đường dẫn `app.py`/`templates/` ở trên cho khớp với cách bạn tổ chức thư mục thực tế (ví dụ đặt trong `api/`); `Jinja2Templates` trong `app.py` trỏ tới thư mục `templates` **cùng cấp** với file `app.py`.
+
+
+## Pipeline xử lý dữ liệu (Crawl → Chunk → Embedding)
+
+![Pipeline xử lí dữ liệu (Crawl -> Chunk -> Embedding)](images/crawl_preprocess.png)
+
+
+### Quy trình tổng quan
+
+Dữ liệu được xử lý qua 4 phase liên tiếp: crawl từ API → lọc và chuẩn hóa → chia chunk theo cấu trúc pháp luật → embedding với FAISS.
+
+```
+Dữ liệu VBPL API
+    │
+    ▼
+[PHASE 1: CRAWL]
+    └─► Fetch dữ liệu từ https://vbpl-bientap-gateway.moj.gov.vn/api/qtdc/public/doc/all
+    └─► Lấy detail + HTML content (documentContent.content) từ từng doc
+    └─► Lấy metadata cấu trúc (Điều/Khoản/Điểm) từ index API
+    └─► Lưu: data.jsonl + index_data.jsonl (hỗ trợ resume với checkpoint.json)
+    │
+    ▼
+[PHASE 2: PREPROCESS]
+    └─► Đọc data.jsonl + index_data.jsonl
+    └─► Lọc docs:
+         * effStatus phải là: "Còn hiệu lực", "Hết hiệu lực một phần", "Chưa có hiệu lực"
+         * Loại bỏ: "Hết hiệu lực toàn bộ", "Không còn phù hợp", "Ngưng hiệu lực"
+         * Phải có index metadata
+    └─► Merge dữ liệu cleaned + metadata → processed_data.json
+    └─► Output: error_items.json (lý do lọc)
+    │
+    ▼
+[PHASE 3: CHUNKING]
+    └─► Parse HTML content từ processed_data.json bằng BeautifulSoup
+    └─► Tách theo cấu trúc pháp luật: Phần → Chương → Điều → Khoản → Điểm
+    └─► Mỗi leaf node (Điều/Khoản/Điểm) = 1 chunk
+    └─► Tạo embed_text: [Tên văn bản] - [Số Điều] - [Hierarchy] : [Nội dung]
+    └─► Lưu:
+         * chunks.json: danh sách tất cả chunks + metadata + embed_text
+         * faiss_id_map.json: map FAISS index ID → chunk ID
+         * chunk_map.json: chunk ID → metadata
+         * doc_index_map.json: doc ID → danh sách chunk IDs
+         * article_index_map.json: doc ID + Điều số → danh sách chunk IDs
+    │
+    ▼
+[PHASE 4: EMBEDDING]
+    └─► Embed mỗi chunk.embed_text bằng Qwen3-Embedding-0.6B
+    └─► Build FAISS IndexIDMap (inner product, dimension=1024)
+    └─► Lưu: faiss.index + indexed_ids.json (hỗ trợ resume)
+    │
+    ▼
+Ready cho RAG Pipeline (semantic search)
+```
+
+### Chi tiết các Phase
+
+#### Phase 1: Crawl (`crawl_preprocess.py`)
+
+```bash
+python crawl_preprocess.py
+```
+
+- Crawl **36,916 trang** từ VBPL API (10 docs/trang)
+- Mỗi doc lấy:
+  - **Detail API** (`/api/qtdc/public/doc/{doc_id}`): docNum, title, effStatus, effFrom, documentContent.content (HTML)
+  - **Index API** (qua form POST tới vbpl.vn): metadata cấu trúc pháp luật (tree của các node Phần/Chương/Điều/Khoản/Điểm)
+- **Checkpoint**: lưu lại trang cuối cùng xử lý thành công → có thể resume lại nếu gián đoạn
+- **Output**:
+  - `data.jsonl`: 1 dòng = 1 doc (JSON object)
+  - `index_data.jsonl`: 1 dòng = {doc_id, index_data}
+  - `checkpoint.json`: {last_page, failed_docs}
+
+#### Phase 2: Preprocess (`crawl_preprocess.py phase2`)
+
+```bash
+python crawl_preprocess.py phase2
+```
+
+- Đọc data.jsonl + index_data.jsonl
+- **Lọc effStatus**:
+  - ✅ KEEP: `"Còn hiệu lực"` (Still in effect), `"Hết hiệu lực một phần"` (Partially expired), `"Chưa có hiệu lực"` (Not yet in effect)
+  - ❌ REMOVE: `"Hết hiệu lực toàn bộ"` (Fully expired), `"Không còn phù hợp"` (No longer applicable), `"Ngưng hiệu lực"` (Suspended)
+- **Merge**: kết hợp detail + metadata → 1 doc object hoàn chỉnh
+- **Output**:
+  - `processed_data.json`: dữ liệu được chấp nhận (JSON array)
+  - `error_items.json`: dữ liệu bị lọc (kèm lý do: missing_effStatus, no_index_metadata, unsupported_effStatus, v.v.)
+
+#### Phase 3: Chunking (`chunk_embedding.py`)
+
+```bash
+python chunk_embedding.py phase3
+```
+
+- Parse HTML từ `processed_data.json` bằng BeautifulSoup
+- Xây dựng **tree map** từ metadata index, flatten thành dict `id → node_info`
+- Duyệt tất cả **leaf nodes** (các node không có children hoặc được đánh dấu `isLeaf=true`):
+  - Mỗi leaf = 1 chunk
+  - Lấy **nội dung text** từ HTML element tương ứng
+  - Tạo **hierarchy string**: danh sách tiêu đề từ root tới node hiện tại (bỏ qua Part/Chapter)
+  - Tạo **embed_text**: `[Tên văn bản] - [Số Điều] - [Hierarchy] : [Nội dung]`
+  - Metadata: title, doc_num, doc_id, article (số Điều), clause (khoản nếu có)
+- **Deduplication**: không lưu lại doc lỗi (missing content, metadata)
+- **Output**:
+  - `data/chunks.json`: danh sách tất cả chunks
+  - `data/faiss_id_map.json`: FAISS index → chunk_id
+  - `data/chunk_map.json`: chunk_id → metadata
+  - `data/doc_index_map.json`: doc_id → [chunk indices]
+  - `data/article_index_map.json`: doc_id|article → [chunk indices] (cho tool search_referenced_document)
+  - `data/skipped.json`: danh sách docs bị skip (lý do lỗi)
+
+#### Phase 4: Embedding (`chunk_embedding.py`)
+
+```bash
+python chunk_embedding.py phase4
+```
+
+- Load chunks từ `data/chunks.json`
+- Khởi tạo hoặc resume **FAISS IndexIDMap** (Inner Product, 1024 dimensions)
+- **Embed batch** từng chunk.embed_text:
+  - Gọi embedding API (Qwen3-Embedding-0.6B) với batch size=5
+  - Normalize vectors (L2 norm)
+  - Thêm vào FAISS index với ID = chunk index
+- **Resume capability**: lưu indexed_ids.json → có thể chạy lại nếu gián đoạn
+- **Flush**: lưu FAISS index + indexed_ids mỗi 500 vectors
+- **Output**:
+  - `data/faiss.index`: FAISS binary index (phục vụ semantic search)
+  - `data/indexed_ids.json`: danh sách ID đã embed (dùng resume)
+
+### Chạy toàn bộ pipeline
+
+```bash
+# Chạy toàn bộ 4 phase tuần tự
+python pipeline/crawl_preprocess.py        # Phase 1 + 2
+python pipeline/chunk_embedding.py         # Phase 3 + 4
+ 
+# Hoặc chạy riêng từng phase
+python pipeline/crawl_preprocess.py phase2   # Chỉ preprocess (đã có data.jsonl)
+python pipeline/chunk_embedding.py phase3    # Chỉ chunking
+python pipeline/chunk_embedding.py phase4    # Chỉ embedding (đã có chunks.json)
+```
+
+### Lưu ý khi xử lý dữ liệu
+
+- **Dữ liệu pháp luật lớn**: ~36k docs, ~810k+ chunks, FAISS index ~3.2GB. Khuyến nghị:
+  - SSD/NVMe cho lưu trữ dữ liệu tạm
+  - CPU: ≥8 cores cho parallel processing
+  - RAM: ≥16GB
+  - GPU (tùy chọn): tăng tốc chunking/embedding
+
+- **Offline processing**: toàn bộ 4 phase có thể chạy offline (sau khi crawl dữ liệu lần đầu)
+
+- **Incremental update**: nếu muốn cập nhật dữ liệu mới:
+  - Chạy phase 1 từ `checkpoint.json` (nếu cần)
+  - Hoặc chỉ crawl phần mới, merge vào processed_data.json trước phase 3
 
 ## Kiến trúc pipeline
 
@@ -94,14 +247,10 @@ Hội thoại (messages: [user, assistant, user, ...])
 Trả về: câu trả lời kèm citation [N] + citation_map (map số thứ tự → chunk nguồn)
 ```
 
+![Pipeline xử lí câu hỏi](images/pipeline_answer.png)
+
+
 Toàn bộ các lệnh gọi LLM trong bước 3+4 chạy nối tiếp trong **cùng một danh sách `messages`** (đúng chuẩn tool-calling của OpenAI: `assistant` message chứa `tool_calls` → `tool` message chứa kết quả) để LLM giữ được ngữ cảnh xuyên suốt qua các vòng tra cứu.
-
-### Vì sao có bước "Context Ready" tách riêng?
-
-Ban đầu, dữ liệu `citations`/`sources` được gộp phát cùng lúc với `step: "answer", status: "done"` ngay sau retrieval — nhưng đó cũng chính là tín hiệu **kết thúc câu trả lời** ở cuối luồng. Dùng trùng `answer/done` ở giữa pipeline khiến frontend hiểu nhầm là câu trả lời đã xong ngay từ đầu (trong khi `text` chưa hề tồn tại). Vì vậy, sự kiện chuẩn bị ngữ cảnh được tách thành step riêng: `context_ready`, không đụng vào logic xử lý của `answer`. Event này được phát:
-
-- Ngay sau khi retrieval ban đầu hoàn tất (trước khi gọi LLM sinh câu trả lời).
-- Mỗi lần tool `search_referenced_document` tìm thêm được tài liệu mới (context được cập nhật).
 
 ### `/no_think` — tắt chế độ suy luận (thinking) của model
 

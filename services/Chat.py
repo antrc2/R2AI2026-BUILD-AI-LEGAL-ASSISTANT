@@ -104,7 +104,12 @@ class ChatService:
         kwargs = {
             "model": CHAT_MODEL_NAME,
             "messages": messages,
-            "stream": stream
+            "stream": stream,
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "enable_thinking": False
+                }
+            }
         }
 
         if tools:

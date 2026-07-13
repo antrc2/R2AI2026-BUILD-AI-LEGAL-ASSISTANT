@@ -205,6 +205,7 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": sub_query_prompt},
                 ]),
+                
                 response_format=SUB_QUERY_SCHEMA,
                 stream=False,
             ):
@@ -227,7 +228,7 @@ QUY TẮC TRÍCH DẪN BẮT BUỘC:
         retrieved_docs = []
         for sq in sub_queries:
             try:
-                docs = self.search_service.semantic_search(query=sq, top_k=10)
+                docs = self.search_service.semantic_search(query=sq, top_k=5)
                 retrieved_docs.extend(docs)
             except Exception as e:
                 print(f"Lỗi search cho query '{sq}': {e}")
