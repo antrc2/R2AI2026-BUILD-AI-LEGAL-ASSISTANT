@@ -20,7 +20,7 @@ from datetime import datetime
 # Config
 # ─────────────────────────────────────────────────────────────
 
-EMBEDDING_URL = "http://localhost:11111/v1"
+EMBEDDING_URL = "http://localhost:1234/v1"
 EMBEDDING_MODEL = "text-embedding-qwen3-embedding-0.6b"
 
 EMBEDDING_DIM = 1024
@@ -346,7 +346,7 @@ def phase3_chunk():
         json.dump(faiss_id_map, f)
     print(f"   ✓ {FAISS_ID_MAP_FILE}")
     
-    with open(CHUNK_MAP_FILE, 'w') as f:
+    with open(CHUNK_MAP_FILE, 'w',encoding='utf-8') as f:
         json.dump(chunk_map, f, ensure_ascii=False, indent=2)
     print(f"   ✓ {CHUNK_MAP_FILE}")
     
@@ -354,7 +354,7 @@ def phase3_chunk():
         json.dump(doc_index_map, f, ensure_ascii=False, indent=2)
     print(f"   ✓ {DOC_INDEX_MAP_FILE}")
     
-    with open(ARTICLE_INDEX_MAP_FILE, 'w') as f:
+    with open(ARTICLE_INDEX_MAP_FILE, 'w',encoding='utf-8') as f:
         json.dump(article_index_map, f, ensure_ascii=False, indent=2)
     print(f"   ✓ {ARTICLE_INDEX_MAP_FILE}")
     
