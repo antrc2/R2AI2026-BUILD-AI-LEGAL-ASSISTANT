@@ -14,7 +14,7 @@ ARTICLE_MAP_FILE   = os.path.join(DATA_DIR, "article_index_map.json")
 CHUNKS_FILE        = os.path.join(DATA_DIR, "chunks.json")
 
 class SearchService:
-    def __init__(self, threshold=0.45):
+    def __init__(self, threshold=0.5):
         self.threshold = threshold
         self.chat_service = ChatService() # Dùng để embed query
         
