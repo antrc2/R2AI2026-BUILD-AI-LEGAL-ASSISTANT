@@ -14,14 +14,17 @@ import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
 
 
 # ─────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────
 
-EMBEDDING_URL = "http://localhost:1234/v1"
-EMBEDDING_MODEL = "text-embedding-qwen3-embedding-0.6b"
+EMBEDDING_URL = os.getenv("EMBEDDING_BASE_URL", "http://localhost:1234/v1")
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL_NAME', 'text-embedding-qwen3-embedding-0.6b')
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", 'dont need')
 
 EMBEDDING_DIM = 1024
 EMBED_BATCH_SIZE = 5
@@ -51,7 +54,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ─────────────────────────────────────────────────────────────
 
 client = OpenAI(
-    api_key="dummy",
+    api_key=EMBEDDING_API_KEY,
     base_url=EMBEDDING_URL
 )
 
